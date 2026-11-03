@@ -1,0 +1,15 @@
+export { openWorkspace, stopWorkspace, assertSpikeConfiguration } from './open.ts';
+export { editorUrl, waitForReady } from './readiness.ts';
+export type { ContainerRuntime, RuntimeInstance } from './runtime.ts';
+export { recentFolders, restorableFolders, refreshWindowHistory, completeOnboarding, readCatalog } from './history.ts';
+export { VspodError, explainError } from './errors.ts';
+export type { OpenOptions, StartupProgress } from './open.ts';
+export { upgradeWorkspace } from './upgrade.ts';
+export { closeWindows } from './history.ts';
+export { configurationDirectory, createProfile, listProfiles, readProfile, selectedProfile, switchProfile } from './profiles.ts';
+export { inspectConfiguration, setCompatibility } from './configuration.ts';
+export { migrateWorkspace } from './migration.ts';
+export type { MigrationResult } from './migration.ts';
+export { configurationTrusted, trustConfiguration, revokeConfigurationTrust } from './trust.ts';
+export { syncWorkspaceExtensions } from './extensions.ts';
+export type { SyncExtensionsOptions } from './extensions.ts';

@@ -1,0 +1,13 @@
+{
+  "name": "@vspod/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "build": "cargo build --manifest-path src-tauri/Cargo.toml",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "package": "tauri build --bundles app"
+  },
+  "devDependencies": { "@tauri-apps/cli": "2.10.1" }
+}

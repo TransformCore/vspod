@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VSPod",
+  "version": "0.1.0",
+  "identifier": "dev.vspod.desktop.spike",
+  "build": { "frontendDist": "ui" },
+  "app": {
+    "windows": [],
+    "withGlobalTauri": false,
+    "security": {
+      "capabilities": [],
+      "csp": "default-src 'self'; style-src 'self'; img-src 'self'; script-src 'none'; connect-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "category": "DeveloperTool",
+    "shortDescription": "A native workspace for container-isolated development",
+    "icon": ["icons/icon.icns", "icons/icon.png"],
+    "macOS": { "minimumSystemVersion": "12.0" }
+  }
+}

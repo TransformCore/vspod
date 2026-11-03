@@ -1,0 +1,6 @@
+node_modules/
+target/
+dist/
+apps/keychain-helper/build/
+.DS_Store
+.vspod/

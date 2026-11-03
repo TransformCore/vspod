@@ -1,0 +1,32 @@
+{
+  "name": "vspod",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22 <23" },
+  "workspaces": ["apps/*", "packages/*"],
+  "bin": { "vspod": "bin/vspod.mjs" },
+  "scripts": {
+    "vspod": "tsx apps/cli/src/index.ts",
+    "build": "node scripts/build.mjs",
+    "test": "tsx --test packages/*/src/*.test.ts tests/*.test.ts",
+    "test:docker": "VSPOD_DOCKER_TEST=1 tsx --test tests/container.test.ts tests/extensions-container.test.ts",
+    "test:registry": "VSPOD_EXTENSION_REGISTRY_TEST=1 tsx --test tests/extensions-container.test.ts",
+    "test:native": "VSPOD_NATIVE_TEST=1 tsx --test tests/native.test.ts",
+    "typecheck": "tsc --noEmit",
+    "identity:build": "bash apps/keychain-helper/build.sh",
+    "desktop:check": "npm run check --workspace @vspod/desktop",
+    "desktop:build": "npm run build --workspace @vspod/desktop",
+    "desktop:package": "npm run package --workspace @vspod/desktop",
+    "desktop:test": "npm run test --workspace @vspod/desktop",
+    "desktop:lint": "cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml -- -D warnings"
+  },
+  "dependencies": { "commander": "^14.0.2" },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

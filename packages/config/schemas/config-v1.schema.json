@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:vspod:config:v1",
+  "$ref": "#/$defs/repository",
+  "$defs": {
+    "extension": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^[a-z0-9][a-z0-9-]*\\.[a-z0-9][a-z0-9-]*(?:@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?)?$"
+    },
+    "extensions": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/extension" }
+    },
+    "providers": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 5,
+      "items": { "enum": ["github", "azure", "github-copilot", "salesforce", "aws"] }
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "editor.tabSize": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "editor.insertSpaces": { "type": "boolean" },
+        "editor.detectIndentation": { "type": "boolean" },
+        "editor.formatOnSave": { "type": "boolean" },
+        "editor.fontFamily": { "type": "string", "maxLength": 512 },
+        "editor.fontSize": { "type": "number", "minimum": 6, "maximum": 100 },
+        "editor.fontLigatures": { "type": "boolean" },
+        "editor.wordWrap": { "enum": ["off", "on", "wordWrapColumn", "bounded"] },
+        "editor.rulers": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "type": "integer", "minimum": 1, "maximum": 1000 }
+        },
+        "editor.minimap.enabled": { "type": "boolean" },
+        "editor.renderWhitespace": { "enum": ["none", "boundary", "selection", "trailing", "all"] },
+        "files.autoSave": { "enum": ["off", "afterDelay", "onFocusChange", "onWindowChange"] },
+        "files.trimTrailingWhitespace": { "type": "boolean" },
+        "files.insertFinalNewline": { "type": "boolean" },
+        "files.eol": { "enum": ["\n", "\r\n", "auto"] },
+        "workbench.colorTheme": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "workbench.iconTheme": { "type": ["string", "null"], "maxLength": 200 },
+        "terminal.integrated.fontFamily": { "type": "string", "maxLength": 512 },
+        "terminal.integrated.fontSize": { "type": "number", "minimum": 6, "maximum": 100 },
+        "terminal.integrated.scrollback": { "type": "integer", "minimum": 0, "maximum": 100000 }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "theme": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "settings": { "$ref": "#/$defs/settings" },
+        "extensions": { "$ref": "#/$defs/extensions" },
+        "keybindings": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "command"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1, "maxLength": 100 },
+              "command": { "type": "string", "minLength": 1, "maxLength": 200 },
+              "when": { "type": "string", "maxLength": 1000 }
+            }
+          }
+        }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "settings": { "$ref": "#/$defs/settings" },
+        "extensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "required": { "$ref": "#/$defs/extensions" },
+            "optional": { "$ref": "#/$defs/extensions" }
+          }
+        },
+        "accounts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "required": { "$ref": "#/$defs/providers" },
+            "optional": { "$ref": "#/$defs/providers" }
+          }
+        },
+        "tasks": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "startup": {
+              "type": "array",
+              "maxItems": 32,
+              "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

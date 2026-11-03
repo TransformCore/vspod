@@ -1,0 +1,16 @@
+{
+  "name": "@vspod/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "node ../../scripts/build.mjs", "test": "tsx --test ../../tests/*cli.test.ts" },
+  "dependencies": {
+    "@vspod/config": "0.1.0",
+    "@vspod/identity": "0.1.0",
+    "@vspod/core": "0.1.0",
+    "@vspod/docker": "0.1.0",
+    "@vspod/workspace": "0.1.0",
+    "@clack/prompts": "^0.11.0",
+    "commander": "^14.0.2"
+  }
+}

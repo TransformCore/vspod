@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>VSPod</title>
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <main aria-live="polite">
+      <header><span class="mark" aria-hidden="true">V</span><span class="wordmark">VSPod</span><span class="local">LOCAL WORKSPACE</span></header>
+      <section aria-live="polite" aria-atomic="true">
+        <h1 id="status">Opening your workspace</h1>
+        <p id="detail">Preparing a place for your next idea.</p>
+      </section>
+      <progress id="progress" max="5" value="0" aria-label="Workspace startup"></progress>
+      <ol aria-label="Startup stages">
+        <li data-step="0" data-state="active">Runtime</li>
+        <li data-step="1">Setup</li>
+        <li data-step="2">Workspace</li>
+        <li data-step="3">Connect</li>
+        <li data-step="4">Editor</li>
+      </ol>
+      <footer><span class="indicator"></span><span class="footnote">Your workspace, close at hand.</span></footer>
+    </main>
+  </body>
+</html>
