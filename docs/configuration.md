@@ -21,7 +21,7 @@ vspod migrate /path/to/repo           # Read-only preview
 vspod migrate /path/to/repo --write   # Create once; runtime activation stays gated
 ```
 
-These commands require Node.js 22 but do not require Docker or the desktop app.
+These commands require Node.js 22 or newer but do not require Docker or the desktop app.
 Creating a profile never overwrites an existing file. Switching validates the
 target profile before atomically updating the host selection. Global selection
 is the fallback; a repository selection takes precedence and remains independent.
@@ -81,20 +81,37 @@ existing non-root container boundary.
 
 ```sh
 npm run identity:build
-vspod login github --client-id <registered-public-client-id>
+vspod login github
 vspod login azure --client-id <registered-public-client-id> --tenant-id <tenant-id>
+vspod login github --no-browser
 vspod accounts
 vspod accounts --json
 vspod logout <account-id>
 vspod logout --all
 ```
 
-GitHub and Azure device authorization require your registered public-client IDs;
-there is no fabricated default application registration or embedded client secret.
-The host can alternatively supply `VSPOD_GITHUB_CLIENT_ID`,
-`VSPOD_AZURE_CLIENT_ID` and `VSPOD_AZURE_TENANT_ID`. These are public identifiers,
+GitHub defaults to VSPod's public OAuth App client ID `Ov23liDC7oUEtbmsxOVh`;
+users do not need to register their own GitHub application. To use a different
+registration, `--client-id` takes precedence over `VSPOD_GITHUB_CLIENT_ID`, which
+takes precedence over the shipped default. An empty environment override uses
+the default; an explicitly empty flag is rejected.
+Azure still requires a registered client ID and tenant via flags or
+`VSPOD_AZURE_CLIENT_ID` and `VSPOD_AZURE_TENANT_ID`. No client secret is embedded.
+These are public identifiers,
 not tokens. Login requires an interactive terminal and displays the provider's
-verification URL/code; it does not automatically start OAuth in CI.
+verification URL, short code and expiry before opening the system browser.
+Enter that code on the provider page and approve only a login you just requested
+in VSPod. Do not share the code. No code is copied to the clipboard or appended to
+the browser URL. VSPod polls for completion; there is no redirect callback.
+
+Use `--no-browser` to open the displayed URL yourself, including on another device.
+If the browser cannot be opened, VSPod warns and continues waiting with the same
+code and manual instructions. This does not enable unattended authorization:
+login still requires an interactive terminal and does not start OAuth in CI.
+Enable **Device Flow** in VSPod's GitHub OAuth App registration. The app form may
+require a callback URL, but device flow does not use it. Azure tenant policies can
+block device authorization; VSPod reports that failure rather than bypassing it
+or silently changing login flows.
 
 The Swift helper is built at
 `apps/keychain-helper/build/vspod-keychain-helper`. It uses macOS Security.framework,

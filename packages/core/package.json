@@ -6,9 +6,12 @@
   "exports": {
     ".": "./src/index.ts",
     "./runtime": "./src/runtime.ts",
+    "./backend": "./src/backend.ts",
+    "./readiness": "./src/readiness.ts",
     "./process": "./src/process.ts",
     "./installation": "./src/installation.ts",
-    "./state": "./src/state.ts"
+    "./state": "./src/state.ts",
+    "./native": "./src/native-attachment.ts"
   },
   "scripts": { "build": "tsc --noEmit -p ../../tsconfig.json", "test": "tsx --test src/*.test.ts" },
   "dependencies": { "@vspod/config": "0.1.0", "@vspod/extensions": "0.1.0", "@vspod/workspace": "0.1.0", "proper-lockfile": "^4.1.2", "yaml": "^2.8.1" }

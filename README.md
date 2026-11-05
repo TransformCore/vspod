@@ -1,6 +1,7 @@
 # VSPod
 
-A native macOS window for a repository-isolated, local code-server container.
+A native macOS workspace for a repository-isolated editor: code-server by default,
+or experimental desktop VS Code over Wayland.
 
 ## Status
 
@@ -26,13 +27,20 @@ packages/core       Startup, history, sessions and runtime contracts
 packages/config     Versioned configuration loading, validation and resolution
 packages/identity   Provider login, secure storage, refresh and broker policy
 packages/extensions Open VSX artifacts, approval, caching and managed pins
-packages/docker     Local Docker adapter and maintained editor image
+packages/docker     Local container lifecycle and volume ownership
 packages/workspace  Canonical repository identity
+packages/app-runner Generic Wayland guest + macOS host (experimental)
+packages/editor-backends Editor activation, sessions, readiness and extension adapters
 ```
+
+The [isolated application runner](packages/app-runner/README.md) has been extracted from the Wayland
+spike. Both a non-Electron GTK app and the VS Code playground consume it. VSPod's CLI now uses the
+[editor backend adapters](packages/editor-backends/README.md), separate from generic container
+operations. Desktop/Wayland is opt-in; code-server remains the default.
 
 ## Run
 
-Runtime requirements: macOS, Node.js 22, npm, Git and Docker Desktop. Building the
+Runtime requirements: macOS, Node.js 22 or newer, npm, Git and Docker Desktop. Building the
 native app also requires Rust 1.90 or newer and the Xcode Command Line Tools.
 Docker Desktop must already be installed. The CLI
 can request that Docker Desktop start, but never installs a runtime or uses sudo.
@@ -45,9 +53,12 @@ vspod setup
 vspod open /path/to/your/git/repository
 ```
 
-If you do not use nvm, select Node.js 22 through your normal installation method.
+Node.js 22 and 24 are tested host runtimes; newer versions are not blocked.
+If you do not use nvm, select Node.js 22 or newer through your normal installation method.
 Instead of linking globally, run `npm run vspod -- open /path/to/repository` from
-this checkout. Setup can build the native app and request that the installed
+this checkout. The `--` is required to forward options such as `--backend desktop`
+to VSPod rather than npm. This entry point enforces a Node.js 22 minimum before starting any
+workspace or native helper. Setup can build the native app and request that the installed
 Docker Desktop start, with your confirmation. Use `vspod setup --check` for
 read-only checks or `vspod setup --yes` for noninteractive setup.
 The first open builds the maintained VSPod image and can take
@@ -105,6 +116,78 @@ Signing, notarization and self-updates remain outside this MVP slice.
 
 `npm run desktop:build` remains available for a direct development executable.
 
+## Experimental Desktop / Wayland Backend
+
+This runs desktop VS Code inside the repository container, with individual macOS windows presented
+by the generic Swift/Metal helper. It does not embed desktop pixels in Tauri or start the playground.
+The maintained image installs pinned VS Code during image build, not on every workspace launch.
+
+```sh
+vspod setup --backend desktop
+vspod open /path/to/repository --backend desktop
+vspod shell --backend desktop
+vspod logs --backend desktop
+vspod stop --backend desktop
+vspod extensions sync --backend desktop
+vspod open --backend desktop --restricted
+```
+
+`--backend code-server|desktop` is a global option accepted on runtime commands. Alternatively set
+`VSPOD_EDITOR_BACKEND=desktop` in your host shell. Unknown choices fail, with no silent fallback.
+Repository configuration cannot choose the backend or grant host permissions. Recent selection, `reopen` and `restore`
+remember the backend unless explicitly overridden by the flag or environment variable.
+
+The two backends have independent containers, installed extensions, editor state, configuration
+receipts and managed-extension pins. They share only the repository bind mount, host configuration,
+trust policy and immutable VSIX download cache. Stop/shell/logs/upgrade target the selected backend,
+not both; two simultaneously running backends can edit the same repository files.
+
+Desktop applies resolved settings/keybindings, exact executable trust, approved startup tasks and
+restricted mode through the same core flow. Native `.vscode` settings are redirected to the resolved
+configuration source, not reapplied independently. Required accounts still fail closed: host login
+does not inject credentials or provide editor OAuth callbacks.
+
+Warm open focuses the existing helper; `--new-window` asks the guest editor for another window on
+the same attachment. Subfolders use editor IPC and the same helper. `quit` detaches the helper and
+keeps the guest warm; reopening reattaches to the live windows. Closing the guest application's final
+window can end the application/container. `--smoke` creates and closes a fresh attachment without
+changing history; detach an already attached desktop workspace with `quit` before smoke-testing it.
+Cancellation stops a guest started by that open, not one that was already running.
+
+Attachments have an exclusive, heartbeat-backed lease independent of recent-folder history.
+A second supervisor cannot replace a live attachment. If the helper crashes, reopening attaches
+to the existing guest. After a supervisor crash, allow five seconds for its lease to expire before
+reopening. A stopped guest can be reopened; an externally restarted guest with a changed generation
+requires explicit `stop` followed by `open`, rather than attaching with stale configuration.
+
+```sh
+npm run vspod -- doctor . --backend desktop
+npm run vspod -- logs . --backend desktop
+npm run vspod -- stop . --backend desktop
+npm run vspod -- open . --backend desktop
+```
+
+Doctor reports the selected container, start generation, session match and native attachment,
+including the private helper and supervisor log paths. Startup reports the native failure and
+recovery hint instead of disguising a presenter crash as user cancellation.
+
+Clipboard, Finder drops, file export from the workspace and recent-input browser handoff are
+host-enabled for this opt-in adapter. Imported/exported files remain in private attachment directories
+so pasted file URLs do not expire on detach. These directories and private host logs are under the
+workspace's host state directory; do not clear them while their clipboard files are still needed.
+
+The validated [renderer seccomp policy](packages/editor-backends/security/README.md) is bundled and
+selected automatically. No environment variable is required. Advanced host configuration can set
+`VSPOD_DESKTOP_SECCOMP` to an absolute profile path; an invalid override fails without fallback.
+Unset a previous override to use the bundled default. Policy changes require explicit container
+recreation/upgrade; stopping and starting an existing container does not change its Docker policy.
+
+This is macOS-only, locally built and experimental. Neither
+unconfined seccomp nor Chromium's `--no-sandbox` is used. Signed helper distribution,
+multi-monitor/scaling polish, menu-based clipboard import, drag-out and full cursor surfaces remain
+release gates. Microsoft's downloaded VS Code distribution retains its own license; this checkout
+does not redistribute its binaries or promise proprietary extension support.
+
 ## Configuration And Profiles
 
 ```sh
@@ -136,7 +219,7 @@ Required runtime accounts remain gated until credential transport is verified.
 
 ```sh
 npm run identity:build
-vspod login github --client-id <your-public-client-id>
+vspod login github
 vspod login azure --client-id <your-public-client-id> --tenant-id <your-tenant>
 vspod accounts --json
 vspod logout <account-id>
@@ -146,7 +229,15 @@ vspod extensions update           # Explicit updates, never silent upgrades on o
 vspod open --restricted           # Safe settings; skip user extensions/hooks/accounts
 ```
 
-Login requires an interactive terminal and your own public-client registration.
+Login requires an interactive terminal. GitHub uses VSPod's public OAuth client
+ID `Ov23liDC7oUEtbmsxOVh`; no application registration is needed for individual
+users. Override it with `--client-id` or `VSPOD_GITHUB_CLIENT_ID` (flag wins).
+Azure still requires your own public-client registration and tenant.
+Device flow must be enabled in the GitHub OAuth App. Both providers open the system browser
+and show a short code and expiry; enter the code and approve only a login you
+requested. Use `--no-browser` for manual opening. Browser-launch failures leave
+manual instructions and continue waiting. Device login needs no redirect URI or
+client secret; Azure administrators may restrict this flow.
 Tokens stay in Keychain; account listing is metadata only. Local logout does not
 claim upstream token revocation. Extension installation uses Open VSX, not a
 proprietary marketplace fallback. See [identity and extension behavior](docs/configuration.md)
@@ -185,6 +276,11 @@ volumes, and retains the old container until the new editor is healthy. If start
 fails, it restores the previous container. Finish terminal jobs and back up
 important data before upgrading: volumes are shared, not snapshotted, so this is
 container rollback, not data rollback. Reopen afterward for a fresh native session.
+Native attachments detach before replacement. Readiness or approved startup-task failures roll
+back the container and reapply configuration, recording the restored start generation. Approved
+startup tasks run again during recovery and should be safe to repeat. Cancellation cannot interrupt
+the rollback; failed recovery is reported explicitly and unusable session/configuration receipts
+are removed. This does not provide transactional rollback of startup-task side effects.
 
 This command updates repository environments, not the VSPod application itself.
 For application source updates, use your normal source-control update, then

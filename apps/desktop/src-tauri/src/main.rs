@@ -53,8 +53,10 @@ fn connect(
             _ => thread::sleep(Duration::from_millis(200)),
         }
     };
-    let origin = session::validate_origin(session.url.as_deref().ok_or("Missing editor URL")?)?;
-    let password = session.password.ok_or("Missing runtime credential")?;
+    let (origin, password) = session
+        .presentation
+        .ok_or("Missing editor presentation")?
+        .into_web()?;
     show_status(
         window,
         "Connecting securely",

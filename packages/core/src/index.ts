@@ -1,6 +1,7 @@
 export { openWorkspace, stopWorkspace, assertSpikeConfiguration } from './open.ts';
 export { editorUrl, waitForReady } from './readiness.ts';
 export type { ContainerRuntime, RuntimeInstance } from './runtime.ts';
+export type { EditorBackend, EditorPresentation, EditorSession, RuntimeConfiguration } from './backend.ts';
 export { recentFolders, restorableFolders, refreshWindowHistory, completeOnboarding, readCatalog } from './history.ts';
 export { VspodError, explainError } from './errors.ts';
 export type { OpenOptions, StartupProgress } from './open.ts';

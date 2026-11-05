@@ -6,20 +6,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { DockerRuntime } from '@vspod/docker';
+import { CodeServerBackend, CODE_SERVER_ENVIRONMENT, DesktopBackend } from '@vspod/editor-backends';
 import { resolveWorkspace } from '@vspod/workspace';
 import type { CachedExtensionArtifact } from '@vspod/extensions';
 import { inspectConfiguration, syncWorkspaceExtensions, trustConfiguration } from '@vspod/core';
 import { assertWorkspaceExtensions } from '../packages/core/src/extensions.ts';
 
-test('isolated Docker installer installs exact local VSIX files without starting the workspace', {
-  skip: process.env.VSPOD_DOCKER_TEST !== '1', timeout: 120_000,
+for (const kind of ['code-server', 'desktop'] as const) {
+test(`${kind} isolated installer installs exact local VSIX files without starting the workspace`, {
+  skip: kind === 'desktop' ? process.env.VSPOD_DESKTOP_TEST !== '1' : process.env.VSPOD_DOCKER_TEST !== '1', timeout: 120_000,
 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'vspod-test-extension-install-'));
   const repo = join(root, 'vspod-test-project');
   await mkdir(repo);
   execFileSync('git', ['init', '--quiet', repo]);
   const workspace = await resolveWorkspace(repo);
-  const runtime = new DockerRuntime();
+  const desktop = new DesktopBackend();
+  const runtime = kind === 'desktop' ? desktop.runtime : new DockerRuntime(CODE_SERVER_ENVIRONMENT);
+  const backend = kind === 'desktop' ? desktop : new CodeServerBackend(runtime);
   let created = false;
   try {
     await runtime.ensureAvailable();
@@ -48,7 +52,7 @@ test('isolated Docker installer installs exact local VSIX files without starting
       downloadUrl: 'https://open-vsx.org/api/vspod/install-probe/1.2.3/file/vspod.install-probe-1.2.3.vsix',
       cachePath, sha256: createHash('sha256').update(await readFile(cachePath)).digest('hex'),
     };
-    const adapter = runtime.extensionAdapter(workspace);
+    const adapter = backend.extensionAdapter(workspace);
     assert.deepEqual(await adapter.list(), []);
     await adapter.install(artifact);
     assert.deepEqual(await adapter.list(), [{ id: artifact.id, version: artifact.version }]);
@@ -60,6 +64,7 @@ test('isolated Docker installer installs exact local VSIX files without starting
     await rm(root, { recursive: true, force: true });
   }
 });
+}
 
 test('approved Open VSX ESLint resolves, validates, installs and reuses an immutable managed pin', {
   skip: process.env.VSPOD_EXTENSION_REGISTRY_TEST !== '1', timeout: 180_000,
@@ -73,13 +78,14 @@ test('approved Open VSX ESLint resolves, validates, installs and reuses an immut
   await mkdir(repo);
   execFileSync('git', ['init', '--quiet', repo]);
   const workspace = await resolveWorkspace(repo);
-  const runtime = new DockerRuntime();
+  const runtime = new DockerRuntime(CODE_SERVER_ENVIRONMENT);
+  const backend = new CodeServerBackend(runtime);
   try {
     await mkdir(join(repo, '.vspod'));
     await writeFile(join(repo, '.vspod/vspod.yml'), 'schemaVersion: 1\nextensions:\n  required: [dbaeumer.vscode-eslint@3.0.34]\n');
     await trustConfiguration(workspace, (await inspectConfiguration(workspace)).resolved);
     let approvals = 0;
-    const outcomes = await syncWorkspaceExtensions(runtime, workspace, {
+    const outcomes = await syncWorkspaceExtensions(backend, workspace, {
       approveArtifacts: async (artifacts) => {
         approvals += artifacts.length;
         for (const artifact of artifacts) {
@@ -95,17 +101,17 @@ test('approved Open VSX ESLint resolves, validates, installs and reuses an immut
     });
     assert.equal(approvals, 1);
     assert.ok(outcomes.some((item) => item.id === 'dbaeumer.vscode-eslint' && item.status === 'installed'));
-    assert.ok((await runtime.extensionAdapter(workspace).list()).some((item) => item.id === 'dbaeumer.vscode-eslint' && item.version === '3.0.34'));
-    const again = await syncWorkspaceExtensions(runtime, workspace, {
+    assert.ok((await backend.extensionAdapter(workspace).list()).some((item) => item.id === 'dbaeumer.vscode-eslint' && item.version === '3.0.34'));
+    const again = await syncWorkspaceExtensions(backend, workspace, {
       approveArtifacts: async () => { throw new Error('Unchanged managed pins never need new approval'); },
     });
     assert.ok(again.some((item) => item.id === 'dbaeumer.vscode-eslint' && item.status === 'unchanged'));
     assert.equal((await runtime.inspect(workspace))!.running, false);
     const configuration = (await inspectConfiguration(workspace)).resolved;
     const state = join(root, 'state', workspace.id);
-    await assertWorkspaceExtensions(runtime, workspace, state, configuration);
-    await runtime.extensionAdapter(workspace).uninstall('dbaeumer.vscode-eslint');
-    await assert.rejects(assertWorkspaceExtensions(runtime, workspace, state, configuration), { code: 'EXTENSION_REQUIRED_UNAVAILABLE' });
+    await assertWorkspaceExtensions(backend, workspace, state, configuration);
+    await backend.extensionAdapter(workspace).uninstall('dbaeumer.vscode-eslint');
+    await assert.rejects(assertWorkspaceExtensions(backend, workspace, state, configuration), { code: 'EXTENSION_REQUIRED_UNAVAILABLE' });
   } finally {
     if (await runtime.inspect(workspace)) {
       await runtime.remove(workspace);

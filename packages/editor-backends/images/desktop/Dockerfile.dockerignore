@@ -1,0 +1,9 @@
+**
+!packages/
+!packages/editor-backends/
+!packages/editor-backends/images/
+!packages/editor-backends/images/code-server/
+!packages/editor-backends/images/code-server/apply-configuration.mjs
+!packages/editor-backends/images/desktop/
+!packages/editor-backends/images/desktop/*.mjs
+!packages/editor-backends/images/desktop/Dockerfile

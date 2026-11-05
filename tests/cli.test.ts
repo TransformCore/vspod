@@ -5,9 +5,38 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
+import { pathToFileURL } from 'node:url';
 import { installationRoot } from '@vspod/core/installation';
 
 const execute = promisify(execFile);
+
+test('launcher rejects older Node versions but accepts the minimum and newer majors', async () => {
+  const launcher = pathToFileURL(join(installationRoot(), 'bin/vspod.mjs')).href;
+  for (const version of ['20.19.0', '22.14.0', '24.21.0', '26.0.0']) {
+    const script = `Object.defineProperty(process.versions, 'node', { value: ${JSON.stringify(version)} });
+process.argv = [process.execPath, 'vspod', '--help'];
+await import(${JSON.stringify(launcher)});`;
+    const run = () => execute(process.execPath, ['--input-type=module', '--eval', script]);
+    if (version.startsWith('20.')) {
+      await assert.rejects(run(), (error: unknown) => {
+        const result = error as { code: number; stderr: string };
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /requires Node.js 22 or newer/);
+        return true;
+      });
+    } else {
+      assert.match((await run()).stdout, /Usage: vspod/);
+    }
+  }
+});
+
+test('npm entry point uses the same runtime guard and forwards backend arguments', async () => {
+  const { stdout } = await execute('npm', ['run', 'vspod', '--', 'open', '--backend', 'desktop', '--help'], {
+    cwd: installationRoot(),
+  });
+  assert.match(stdout, /node bin\/vspod\.mjs/);
+  assert.match(stdout, /Usage: vspod open/);
+});
 
 test('CLI first-run history is empty and recovery errors have a next step without a stack', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'vspod-cli-'));
@@ -97,6 +126,18 @@ test('bundled CLI resolves ESM parser dependencies and persists host selections'
     assert.equal(result.resolved.settings['editor.tabSize'], 2);
     assert.equal(result.resolved.provenance['editor.tabSize'], 'compatibility');
     assert.match((await run(['extensions', 'update', '--help'])).stdout, /approve/);
+    assert.match((await run(['--help'])).stdout, /--backend/);
+    await assert.rejects(run(['open', '--backend', 'unknown']), (error: unknown) => {
+      assert.match((error as { stderr: string }).stderr, /Allowed choices are code-server, desktop/);
+      return true;
+    });
+    await assert.rejects(execute(process.execPath, [cli, 'doctor'], {
+      cwd: root, env: { ...environment, VSPOD_EDITOR_BACKEND: 'unknown' },
+    }), (error: unknown) => {
+      assert.match((error as { stderr: string }).stderr, /BACKEND_UNSUPPORTED/);
+      assert.match((error as { stderr: string }).stderr, /No fallback was started/);
+      return true;
+    });
     await assert.rejects(run(['extensions', 'sync', '--include-optional', '--exclude-optional']), (error: unknown) => {
       assert.match((error as { stderr: string }).stderr, /EXTENSIONS_USAGE/);
       return true;

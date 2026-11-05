@@ -2,22 +2,32 @@
 import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHostIdentity, IdentityError, MacKeychainSecureStore } from '@vspod/identity';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import * as prompt from '@clack/prompts';
-import { DockerRuntime } from '@vspod/docker';
+import { CodeServerBackend, DesktopBackend, presentNative } from '@vspod/editor-backends';
 import { openWorkspace, stopWorkspace, recentFolders, restorableFolders,
   completeOnboarding, readCatalog, explainError, VspodError, upgradeWorkspace, closeWindows,
   configurationDirectory, createProfile, listProfiles, selectedProfile, switchProfile, inspectConfiguration,
   migrateWorkspace, syncWorkspaceExtensions } from '@vspod/core';
 import { trustConfiguration, revokeConfigurationTrust, setCompatibility } from '@vspod/core';
-import type { OpenOptions, StartupProgress } from '@vspod/core';
+import type { EditorBackend, OpenOptions, StartupProgress } from '@vspod/core';
 import { execute } from '@vspod/core/process';
 import { desktopBinary, installationRoot } from '@vspod/core/installation';
 import { resolveWorkspace } from '@vspod/workspace';
+import { deviceChallengePresenter, loginClientId } from './device-login.ts';
 
-const runtime = new DockerRuntime();
 const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && !process.env.CI);
 const program = new Command().name('vspod').version('0.1.0').description('Your repository. Your environment. One native window.');
+program.addOption(new Option('--backend <backend>', 'Host-owned editor choice (or VSPOD_EDITOR_BACKEND); default code-server')
+  .choices(['code-server', 'desktop']));
+function selectedBackend(fallback = 'code-server'): EditorBackend {
+  const choice = program.opts<{ backend?: string }>().backend ?? process.env.VSPOD_EDITOR_BACKEND ?? fallback;
+  if (choice === 'code-server') return new CodeServerBackend();
+  if (choice === 'desktop') return new DesktopBackend();
+  throw new VspodError('BACKEND_UNSUPPORTED', `Unknown editor backend: ${choice}`, 'Choose code-server or desktop. No fallback was started.');
+}
+program.command('__present-native', { hidden: true }).argument('<directory>')
+  .action(async (directory: string) => { await presentNative(directory); });
 const info = (message: string) => interactive ? prompt.log.info(message) : console.log(message);
 
 const extensions = program.command('extensions').description('Reconcile approved extensions while the workspace is stopped');
@@ -29,7 +39,8 @@ for (const name of ['sync', 'update'] as const) {
     .action(async (directory: string, options: { approve?: boolean; includeOptional?: boolean; excludeOptional?: boolean }) => {
       if (options.includeOptional && options.excludeOptional) throw new VspodError('EXTENSIONS_USAGE', 'Choose include or exclude optional extensions, not both.', 'Use vspod extensions sync --help.');
       const workspace = await resolveWorkspace(directory);
-      const outcomes = await syncWorkspaceExtensions(runtime, workspace, {
+      const backend = selectedBackend();
+      const outcomes = await syncWorkspaceExtensions(backend, workspace, {
         refresh: name === 'update',
         includeOptional: options.includeOptional ? true : options.excludeOptional ? false : undefined,
         approveArtifacts: async (artifacts) => {
@@ -52,13 +63,14 @@ const identityService = () => createHostIdentity({
 });
 
 program.command('login').argument('<provider>', 'github or azure')
-  .option('--client-id <id>', 'Registered public OAuth application client ID')
+  .option('--client-id <id>', 'Override the public OAuth application client ID (GitHub defaults to VSPod)')
   .option('--tenant-id <tenant>', 'Azure tenant ID')
-  .action(async (provider: string, options: { clientId?: string; tenantId?: string }) => {
+  .option('--no-browser', 'Display the device code and URL without opening the system browser')
+  .action(async (provider: string, options: { clientId?: string; tenantId?: string; browser: boolean }) => {
     if (provider !== 'github' && provider !== 'azure') {
       throw new VspodError('ACCOUNT_PROVIDER_UNSUPPORTED', 'Only GitHub and Azure login are supported.', 'Use vspod login github|azure.');
     }
-    const clientId = options.clientId ?? process.env[provider === 'github' ? 'VSPOD_GITHUB_CLIENT_ID' : 'VSPOD_AZURE_CLIENT_ID'];
+    const clientId = loginClientId(provider, options.clientId, process.env);
     const tenantId = options.tenantId ?? process.env.VSPOD_AZURE_TENANT_ID;
     if (!clientId || (provider === 'azure' && !tenantId)) {
       throw new VspodError('ACCOUNT_CLIENT_CONFIGURATION', 'Public-client registration is required before login.',
@@ -76,9 +88,10 @@ program.command('login').argument('<provider>', 'github or azure')
       const account = await identityService().login(provider, {
         clientId, ...(provider === 'azure' ? { tenantId } : {}),
         signal: cancellation.signal,
-        onDeviceChallenge: ({ userCode, verificationUri }) => {
-          info(`Visit ${verificationUri} in your system browser and enter ${userCode}. Do not share the code.`);
-        },
+        onDeviceChallenge: deviceChallengePresenter(provider, {
+          browser: options.browser, signal: cancellation.signal, info,
+          warn: (message) => interactive ? prompt.log.warn(message) : console.error(message),
+        }),
       });
       info(`Signed in: ${account.metadata.id} (${account.metadata.provider}). Credentials are in Keychain; no repository or container grant was created.`);
     } finally {
@@ -92,7 +105,7 @@ program.command('accounts').description('List host identity metadata; never disp
   .action(async (options: { json?: boolean }) => {
     const accounts = await identityService().list();
     if (options.json) { console.log(JSON.stringify(accounts, null, 2)); return; }
-    if (!accounts.length) { info('No accounts connected. Use vspod login github|azure with your public-client registration.'); return; }
+    if (!accounts.length) { info('No accounts connected. Use vspod login github, or vspod login azure with your public-client registration.'); return; }
     for (const { metadata } of accounts) console.log(`${metadata.id}  ${metadata.provider}  ${metadata.displayName ?? metadata.subject}`);
   });
 
@@ -248,23 +261,25 @@ async function welcome(yes = false): Promise<void> {
   await completeOnboarding();
 }
 
-async function chooseFolder(directory?: string, recent = false): Promise<string> {
-  if (directory && !recent) return directory;
+async function chooseFolder(directory?: string, recent = false): Promise<{ folder: string; backend?: string }> {
+  if (directory && !recent) return { folder: directory };
   if (!recent) {
-    try { await resolveWorkspace('.'); return '.'; } catch (error) {
+    try { await resolveWorkspace('.'); return { folder: '.' }; } catch (error) {
       if (explainError(error).code !== 'NOT_A_REPOSITORY') throw error;
     }
   }
   const entries = await recentFolders();
   if (!entries.length) throw new VspodError('NO_RECENT_FOLDERS', 'No remembered folders yet.', 'Run vspod open /path/to/your/git/repository to open your first workspace.');
-  if (!interactive) return entries[0].folder;
-  return cancelled(await prompt.select({
+  if (!interactive) return { folder: entries[0].folder, backend: entries[0].backend };
+  const index = cancelled(await prompt.select({
     message: 'Where would you like to pick up?',
-    options: entries.map((entry) => ({ value: entry.folder, label: entry.name, hint: entry.folder })),
+    options: entries.map((entry, value) => ({ value, label: `${entry.name} (${entry.backend ?? 'code-server'})`, hint: entry.folder })),
   }));
+  return { folder: entries[index].folder, backend: entries[index].backend };
 }
 
-async function openFolder(directory: string, options: OpenOptions = {}): Promise<void> {
+async function openFolder(directory: string, options: OpenOptions = {}, backendId?: string): Promise<void> {
+  const backend = selectedBackend(backendId);
   const cancellation = new AbortController();
   const interrupt = () => cancellation.abort();
   process.on('SIGINT', interrupt);
@@ -281,7 +296,7 @@ async function openFolder(directory: string, options: OpenOptions = {}): Promise
     } else if (event.step !== lastStep || event.state === 'done') console.log(`${event.title} · ${event.detail}`);
     lastStep = event.step;
   };
-  try { await openWorkspace(runtime, directory, { ...options, onProgress: progress, signal: cancellation.signal }); }
+  try { await openWorkspace(backend, directory, { ...options, onProgress: progress, signal: cancellation.signal }); }
   finally {
     process.off('SIGINT', interrupt);
     process.off('SIGTERM', interrupt);
@@ -296,9 +311,9 @@ program.command('open').argument('[directory]', 'Repository folder; defaults to 
   .option('--smoke', 'Verify native editor startup, then close only the new window')
   .option('--restricted', 'Use safe settings with no user extensions, profile keybindings, startup hooks or account access; requires a stopped runtime when changing mode')
   .action(async (directory: string | undefined, options: OpenOptions & { recent?: boolean; yes?: boolean }) => {
-    const folder = await chooseFolder(directory, options.recent);
+    const choice = await chooseFolder(directory, options.recent);
     await welcome(options.yes);
-    await openFolder(folder, options);
+    await openFolder(choice.folder, options, choice.backend);
   });
 
 program.command('recent').description('List remembered folders').option('--json', 'Output structured JSON')
@@ -306,7 +321,7 @@ program.command('recent').description('List remembered folders').option('--json'
     const entries = await recentFolders();
     if (options.json) { console.log(JSON.stringify(entries, null, 2)); return; }
     if (!entries.length) { info('No recent folders yet. Open a repository with vspod open <path>.'); return; }
-    for (const [index, entry] of entries.entries()) console.log(`${index + 1}. ${entry.name}\n   ${entry.folder}`);
+    for (const [index, entry] of entries.entries()) console.log(`${index + 1}. ${entry.name} (${entry.backend ?? 'code-server'})\n   ${entry.folder}`);
   });
 
 program.command('reopen').description('Reopen the most recently used folder').option('-n, --new-window', 'Always create a new window')
@@ -314,7 +329,7 @@ program.command('reopen').description('Reopen the most recently used folder').op
     const entries = await recentFolders();
     if (!entries.length) throw new VspodError('NO_RECENT_FOLDERS', 'There is nothing to reopen yet.', 'Open your first repository with vspod open <path>.');
     await welcome();
-    await openFolder(entries[0].folder, options);
+    await openFolder(entries[0].folder, options, entries[0].backend);
   });
 
 program.command('restore').description('Reopen the folders from your last active windows')
@@ -324,7 +339,7 @@ program.command('restore').description('Reopen the folders from your last active
     await welcome();
     let restored = 0;
     for (const entry of entries.slice(0, 8)) {
-      try { await openFolder(entry.folder); restored++; }
+      try { await openFolder(entry.folder, {}, entry.backend); restored++; }
       catch (error) {
         if (error instanceof VspodError && error.code === 'OPEN_CANCELLED') throw error;
         const result = explainError(error); console.error(`${entry.name}: ${result.title}\n  ${result.hint}`); process.exitCode = 1;
@@ -337,51 +352,73 @@ program.command('quit').description('Remember and close VSPod windows, keeping e
   .action(async () => { const count = await closeWindows(); info(`Closed ${count} window${count === 1 ? '' : 's'}. Environments stay warm; use vspod restore to return.`); });
 
 program.command('stop').argument('[directory]', 'Git repository', '.').action(async (directory: string) => {
-  await stopWorkspace(runtime, directory);
+  await stopWorkspace(selectedBackend(), directory);
   info('Workspace stopped. Your settings, extensions and files are retained.');
 });
 program.command('logs').argument('[directory]', 'Git repository', '.').option('-f, --follow', 'Stream editor logs').action(async (directory: string, options: { follow?: boolean }) => {
+  const runtime = selectedBackend().runtime;
   await runtime.ensureAvailable();
   process.exitCode = await runtime.logs(await resolveWorkspace(directory), options.follow);
 });
 program.command('shell').argument('[directory]', 'Git repository', '.').action(async (directory: string) => {
+  const runtime = selectedBackend().runtime;
   await runtime.ensureAvailable();
   process.exitCode = await runtime.exec(await resolveWorkspace(directory), ['/bin/bash'], true);
 });
-async function checkInstallation(): Promise<boolean> {
+async function checkInstallation(directory?: string): Promise<boolean> {
+  const backend = selectedBackend();
+  const runtime = backend.runtime;
   let healthy = true;
   const checks: [string, () => Promise<unknown>][] = [
-    ['Node.js 22', async () => { if (process.versions.node.split('.')[0] !== '22') throw new Error(`Found ${process.version}; select Node.js 22.`); }],
+    ['Node.js 22+', async () => { if (Number(process.versions.node.split('.')[0]) < 22) throw new Error(`Found ${process.version}; select Node.js 22 or newer.`); }],
     ['npm', () => execute('npm', ['--version'])],
     ['Git', () => execute('git', ['--version'])],
     ['Local Docker', () => runtime.ensureAvailable()],
-    ['Desktop', () => access(desktopBinary())],
+    ['Desktop', () => backend.nativePresenter ? backend.nativePresenter.check() : access(desktopBinary())],
   ];
   for (const [name, check] of checks) {
     try { await check(); console.log(`OK    ${name}`); }
-    catch (error) { console.error(`NEEDS ATTENTION  ${name}: ${error instanceof Error ? error.message : 'Unavailable'}`); healthy = false; }
+    catch (error) { const result = explainError(error); console.error(`NEEDS ATTENTION  ${name}: ${result.title}\n  ${result.hint}`); healthy = false; }
+  }
+  if (backend.diagnose) {
+    let workspace;
+    try { workspace = await resolveWorkspace(directory ?? '.'); } catch (error) {
+      if (directory || explainError(error).code !== 'NOT_A_REPOSITORY') throw error;
+    }
+    if (workspace) {
+      try {
+        for (const result of await backend.diagnose(workspace)) {
+          console.log(`${result.healthy ? 'OK' : 'NEEDS ATTENTION'}    ${result.name}: ${result.detail}`);
+          if (!result.healthy) healthy = false;
+        }
+      } catch (error) { const result = explainError(error); console.error(`NEEDS ATTENTION  Workspace: ${result.title}\n  ${result.hint}`); healthy = false; }
+    }
   }
   return healthy;
 }
 
-program.command('doctor').description('Check the local installation without changing it').action(async () => {
-  if (!await checkInstallation()) process.exitCode = 1;
+program.command('doctor').argument('[directory]', 'Inspect this repository as well as the installation').description('Check the local installation without changing it').action(async (directory?: string) => {
+  if (!await checkInstallation(directory)) process.exitCode = 1;
 });
 
 program.command('setup').description('First-run checks and native app setup')
   .option('-y, --yes', 'Build the native app and start installed Docker Desktop without prompting')
   .option('--check', 'Only check prerequisites; do not make changes')
   .action(async (options: { yes?: boolean; check?: boolean }) => {
+    const backend = selectedBackend();
+    const runtime = backend.runtime;
     if (options.check) { if (!await checkInstallation()) process.exitCode = 1; return; }
-    info('VSPod setup · Node.js 22, Git, Docker Desktop and the native app');
+    info('VSPod setup · Node.js 22+, Git, Docker Desktop and the native app');
     if (process.platform !== 'darwin') throw new VspodError('PLATFORM_UNSUPPORTED', 'This release supports macOS.', 'Run the native app on a Mac with Docker Desktop installed.');
     await execute('git', ['--version']);
     const consent = options.yes || (interactive && cancelled(await prompt.confirm({ message: 'Check Docker Desktop and build the native app if needed?', initialValue: true })));
     if (!consent) throw new VspodError('SETUP_CONSENT', 'Setup requires your confirmation.', 'Run vspod setup in an interactive terminal, or pass --yes.');
     await runtime.ensureAvailable(true);
-    try { await access(desktopBinary()); } catch {
+    try { await (backend.nativePresenter ? backend.nativePresenter.check() : access(desktopBinary())); } catch {
       info('Building the native app. The first build may take a few minutes.');
-      await execute('npm', ['--prefix', installationRoot(), 'run', 'desktop:package'], { inherit: true, timeout: 900_000 });
+      await execute('npm', ['--prefix', installationRoot(), 'run',
+        ...(backend.nativePresenter ? ['build:host', '--workspace', '@vspod/app-runner'] : ['desktop:package'])],
+      { inherit: true, timeout: 900_000 });
     }
     if (!await checkInstallation()) { process.exitCode = 1; return; }
     await completeOnboarding();
@@ -393,6 +430,8 @@ program.command('upgrade').description('Upgrade this repository environment whil
   .option('-y, --yes', 'Confirm replacement without a prompt')
   .option('--rebuild', 'Rebuild the maintained image even when already current')
   .action(async (directory: string, options: { yes?: boolean; rebuild?: boolean }) => {
+    const backend = selectedBackend();
+    const runtime = backend.runtime;
     const workspace = await resolveWorkspace(directory);
     await runtime.ensureAvailable(true);
     const current = await runtime.inspect(workspace);
@@ -402,7 +441,7 @@ program.command('upgrade').description('Upgrade this repository environment whil
     })));
     if (!consent) throw new VspodError('UPGRADE_CONSENT', 'The environment was not changed.', 'Run vspod upgrade interactively, or pass --yes after finishing running jobs.');
     info('Preparing the update. The previous container is kept until the new editor is healthy.');
-    if (await upgradeWorkspace(runtime, directory, options.rebuild)) info('Environment updated. Run vspod open to reconnect your window.');
+    if (await upgradeWorkspace(backend, directory, options.rebuild)) info('Environment updated. Run vspod open to reconnect your window.');
 });
 
 try { await program.parseAsync(); }

@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -7,6 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { DockerRuntime } from '@vspod/docker';
+import { CodeServerBackend, CODE_SERVER_ENVIRONMENT } from '@vspod/editor-backends';
 import { closeWindows, openWorkspace, recentFolders, restorableFolders, stopWorkspace, inspectConfiguration, trustConfiguration } from '@vspod/core';
 import { execute } from '@vspod/core/process';
 import { installationRoot } from '@vspod/core/installation';
@@ -49,7 +49,8 @@ test('native webview runs a container extension, saves a file and starts an inte
   await mkdir(root);
   execFileSync('git', ['init', '--quiet', root]);
   const workspace = await resolveWorkspace(root);
-  const runtime = new DockerRuntime();
+  const runtime = new DockerRuntime(CODE_SERVER_ENVIRONMENT);
+  const backend = new CodeServerBackend(runtime);
   const previous = process.env.VSPOD_STATE_DIR;
   process.env.VSPOD_STATE_DIR = join(temporary, 'host-state');
   let created = false;
@@ -59,7 +60,7 @@ test('native webview runs a container extension, saves a file and starts an inte
     await runtime.ensureImage();
     await runtime.create(workspace);
     created = true;
-    await runtime.start(workspace, randomBytes(32).toString('hex'));
+    await backend.start(workspace);
     const manifest = {
       name: 'vspod-spike-probe', publisher: 'vspod', version: '0.0.1',
       engines: { vscode: '^1.106.0' }, activationEvents: ['*'],
@@ -74,7 +75,7 @@ test('native webview runs a container extension, saves a file and starts an inte
     await mkdir(join(root, '.vspod'));
     await writeFile(join(root, '.vspod/vspod.yml'), 'schemaVersion: 1\nsettings:\n  editor.tabSize: 2\ntasks:\n  startup:\n    - printf x >> /workspace/startup-count.txt\n');
     await trustConfiguration(workspace, (await inspectConfiguration(workspace)).resolved);
-    desktopPid = await openWorkspace(runtime, root);
+    desktopPid = await openWorkspace(backend, root);
     assert.ok(desktopPid);
     const deadline = Date.now() + 30_000;
     while (true) {
@@ -97,21 +98,21 @@ test('native webview runs a container extension, saves a file and starts an inte
     }
     const containerId = (await runtime.inspect(workspace))!.id;
     runtime.ensureImage = async () => { throw new Error('Warm open must not prepare an image'); };
-    assert.deepEqual(await Promise.all([openWorkspace(runtime, root), openWorkspace(runtime, root)]), [undefined, undefined]);
+    assert.deepEqual(await Promise.all([openWorkspace(backend, root), openWorkspace(backend, root)]), [undefined, undefined]);
     assert.equal((await recentFolders()).length, 1);
     assert.equal((await runtime.inspect(workspace))!.id, containerId);
     assert.equal(await readFile(join(root, 'startup-count.txt'), 'utf8'), 'x', 'warm opens never rerun startup hooks');
     const definition = await readFile(join(root, '.vspod/vspod.yml'), 'utf8');
     await writeFile(join(root, '.vspod/vspod.yml'), definition.replace('editor.tabSize: 2', 'editor.tabSize: 3'));
-    await assert.rejects(openWorkspace(runtime, root), (error: unknown) => (error as { code: string }).code === 'CONFIG_TRUST_REQUIRED');
+    await assert.rejects(openWorkspace(backend, root), (error: unknown) => (error as { code: string }).code === 'CONFIG_TRUST_REQUIRED');
     await trustConfiguration(workspace, (await inspectConfiguration(workspace)).resolved);
-    await assert.rejects(openWorkspace(runtime, root), (error: unknown) => (error as { code: string }).code === 'CONFIG_RESTART_REQUIRED');
+    await assert.rejects(openWorkspace(backend, root), (error: unknown) => (error as { code: string }).code === 'CONFIG_RESTART_REQUIRED');
     assert.equal((await runtime.inspect(workspace))!.id, containerId);
     await writeFile(join(root, '.vspod/vspod.yml'), definition);
     await trustConfiguration(workspace, (await inspectConfiguration(workspace)).resolved);
     const subfolder = join(root, 'api');
     await mkdir(subfolder);
-    assert.ok(await openWorkspace(runtime, subfolder));
+    assert.ok(await openWorkspace(backend, subfolder));
     const folderDeadline = Date.now() + 30_000;
     while (true) {
       const probe = JSON.parse(await readFile(join(root, 'extension-probe.json'), 'utf8'));
@@ -146,7 +147,7 @@ test('native webview runs a container extension, saves a file and starts an inte
     assert.equal(interruptedExit, 130);
     assert.equal((await runtime.inspect(workspace))!.running, true);
     const warmCancellation = new AbortController();
-    await assert.rejects(openWorkspace(runtime, root, {
+    await assert.rejects(openWorkspace(backend, root, {
       newWindow: true, signal: warmCancellation.signal,
       onProgress: (progress) => { if (progress.step === 2) warmCancellation.abort(); },
     }), (error: unknown) => (error as { code: string }).code === 'OPEN_CANCELLED');
@@ -154,19 +155,19 @@ test('native webview runs a container extension, saves a file and starts an inte
     await stopWorkspace(runtime, root);
     const start = runtime.start.bind(runtime);
     const coldCancellation = new AbortController();
-    runtime.start = async (target, credential) => {
-      const instance = await start(target, credential);
+    runtime.start = async (target) => {
+      const instance = await start(target);
       coldCancellation.abort();
       return instance;
     };
-    await assert.rejects(openWorkspace(runtime, root, { newWindow: true, signal: coldCancellation.signal }),
+    await assert.rejects(openWorkspace(backend, root, { newWindow: true, signal: coldCancellation.signal }),
       (error: unknown) => (error as { code: string }).code === 'OPEN_CANCELLED');
     runtime.start = start;
     assert.equal((await runtime.inspect(workspace))!.running, false);
     assert.equal((await runtime.inspect(workspace))!.id, containerId);
     await writeFile(join(root, '.vspod/vspod.yml'), `${definition}accounts:\n  required: [github]\n`);
     await rm(join(root, 'extension-probe.json'));
-    await openWorkspace(runtime, root, { restricted: true, smoke: true });
+    await openWorkspace(backend, root, { restricted: true, smoke: true });
     assert.equal(await readFile(join(root, 'startup-count.txt'), 'utf8'), 'x');
     await assert.rejects(readFile(join(root, 'extension-probe.json')), { code: 'ENOENT' });
     const restrictedConfig = await execute('docker', ['exec', workspace.containerName, 'node', '-e',

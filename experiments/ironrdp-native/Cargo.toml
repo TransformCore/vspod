@@ -1,0 +1,22 @@
+[package]
+name = "vspod-ironrdp-native"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+anyhow = "1"
+ironrdp = { version = "=0.17.0", default-features = false, features = ["core", "pdu", "connector", "session", "graphics", "displaycontrol", "input", "dvc"] }
+ironrdp-tokio = "0.10"
+native-tls = "0.2"
+tokio-native-tls = "0.3"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt", "net", "sync", "time", "macros", "io-util"] }
+
+[patch.crates-io]
+ironrdp-session = { path = "vendor/ironrdp-session" }

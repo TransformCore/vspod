@@ -25,11 +25,16 @@ for (const bundled of [false, true]) {
       }
       assert.deepEqual(JSON.parse((await run(['accounts', '--json'])).stdout), []);
       assert.match((await run(['logout', '--all'])).stdout, /No VSPod accounts/);
+      assert.match((await run(['login', '--help'])).stdout, /--no-browser/);
       for (const [args, expected] of [
         [['login', 'salesforce'], 'ACCOUNT_PROVIDER_UNSUPPORTED'],
-        [['login', 'github'], 'ACCOUNT_CLIENT_CONFIGURATION'],
+        [['login', 'github'], 'ACCOUNT_INTERACTIVE_REQUIRED'],
+        [['login', 'github', '--client-id', ''], 'ACCOUNT_CLIENT_CONFIGURATION'],
+        [['login', 'azure'], 'ACCOUNT_CLIENT_CONFIGURATION'],
         [['login', 'azure', '--client-id', 'public-app'], 'ACCOUNT_CLIENT_CONFIGURATION'],
         [['login', 'github', '--client-id', 'public-app'], 'ACCOUNT_INTERACTIVE_REQUIRED'],
+        [['login', 'github', '--client-id', 'public-app', '--no-browser'], 'ACCOUNT_INTERACTIVE_REQUIRED'],
+        [['login', 'azure', '--client-id', 'public-app', '--tenant-id', 'organizations', '--no-browser'], 'ACCOUNT_INTERACTIVE_REQUIRED'],
       ] as const) {
         await assert.rejects(run([...args]), (error: unknown) => {
           const failure = error as { code: number; stderr: string };

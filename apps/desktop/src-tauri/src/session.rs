@@ -9,14 +9,47 @@ use std::{
 use tauri::{webview::Cookie, Url};
 
 #[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum WebAuthentication {
+    Password { password: String },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum EditorPresentation {
+    Web {
+        origin: String,
+        authentication: WebAuthentication,
+    },
+    Native {
+        #[serde(rename = "sessionId")]
+        _session_id: String,
+    },
+}
+
+impl EditorPresentation {
+    pub fn into_web(self) -> Result<(Url, String), String> {
+        match self {
+            Self::Web {
+                origin,
+                authentication: WebAuthentication::Password { password },
+            } => Ok((validate_origin(&origin)?, password)),
+            Self::Native { .. } => Err(
+                "Native application sessions require the app-runner presenter, not the webview"
+                    .into(),
+            ),
+        }
+    }
+}
+
+#[derive(Deserialize)]
 pub struct Session {
     pub version: u32,
     pub id: String,
     pub name: String,
     pub status: String,
     pub message: String,
-    pub url: Option<String>,
-    pub password: Option<String>,
+    pub presentation: Option<EditorPresentation>,
     pub folder: Option<String>,
     pub detail: Option<String>,
     pub hint: Option<String>,
@@ -179,6 +212,30 @@ fn write_status(destination: PathBuf, value: serde_json::Value) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consumes_only_explicit_web_presentations() {
+        let value = serde_json::json!({
+            "kind": "web", "origin": "http://127.0.0.1:49152",
+            "authentication": {"kind": "password", "password": "a".repeat(64)}
+        });
+        let presentation: EditorPresentation = serde_json::from_value(value).unwrap();
+        let (origin, password) = presentation.into_web().unwrap();
+        assert_eq!(origin.as_str(), "http://127.0.0.1:49152/");
+        assert_eq!(password, "a".repeat(64));
+        let native: EditorPresentation = serde_json::from_value(
+            serde_json::json!({"kind": "native", "sessionId": "runner-session"}),
+        )
+        .unwrap();
+        assert!(native
+            .into_web()
+            .unwrap_err()
+            .contains("app-runner presenter"));
+        assert!(serde_json::from_value::<EditorPresentation>(
+            serde_json::json!({"origin": "http://127.0.0.1:49152", "password": "a".repeat(64)})
+        )
+        .is_err());
+    }
 
     #[test]
     fn limits_editor_folders_to_repository() {

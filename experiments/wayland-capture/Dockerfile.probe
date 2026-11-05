@@ -1,0 +1,9 @@
+FROM vspod-experiment:rdp
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends weston libwayland-client0 libwayland-cursor0 \
+    libwayland-egl1 libxkbcommon0 \
+    && rm -rf /var/lib/apt/lists/*
+COPY probe.sh /opt/wayland-probe/probe.sh
+USER 1000:1000
+ENV HOME=/tmp/home
+ENTRYPOINT ["/bin/bash", "/opt/wayland-probe/probe.sh"]

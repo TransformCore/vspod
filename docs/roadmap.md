@@ -24,6 +24,56 @@ baseline. Historical reports remain evidence, not the current implementation pla
 See [configuration behavior](configuration.md) for exact shipped contracts and
 limitations. A phase is not runtime-complete merely because its model parses.
 
+## Dual Editor Backend Integration
+
+The existing code-server backend remains the default. Integrate the native Wayland path in
+independently validated batches, without making the generic runner depend on VSPod policy.
+
+1. **Runner extraction - implemented.** [App runner](../packages/app-runner/README.md) owns the generic
+   TypeScript launch contract, hardened container arguments, Rust compositor and Swift host.
+   The guest image contains no editor or fixture workspace. Host capabilities and export roots are
+   explicit; Electron's pointer workaround is opt-in. VS Code's playground consumes the package.
+   Acceptance: existing Wayland/X11 suites, clipboard/drop/URL integration, and a non-Electron GTK
+   app with keyboard input, denied host permissions, detach/reattach and mounted data retention.
+2. **Editor backend boundary - implemented.** [Code-server adapter](../packages/editor-backends/README.md)
+   separates Docker operations from editor activation, readiness, extensions and presentation.
+   Sessions distinguish web/native presentation; passwords remain code-server-specific. Applied
+   configuration and extension receipts identify their backend. CLI open/upgrade/extensions route
+   through the adapter; stop/logs/shell use its container driver.
+   Acceptance: code-server unit, real Docker and Tauri end-to-end lifecycle tests pass through the new
+   boundary, including replacement activation failure and restored-session authentication.
+3. **Desktop VSPod adapter - implemented, opt-in.** Host-owned `--backend` / `VSPOD_EDITOR_BACKEND`
+   selection and backend-specific containers, volumes and receipts.
+   Real repository mounts and persistent volumes, resolved settings,
+   keybindings, managed extensions, startup-task trust and restricted mode reach desktop VS Code.
+   Acceptance: `vspod open --backend desktop` and existing stop/logs/shell flows operate on a real
+   repository, with no fixture downloads or generated files in it. The editor is installed at image
+   build time; the validated renderer seccomp profile is bundled and selected automatically, with an
+   optional host-only override. No session-directory artifact is required.
+4. **Lifecycle and release gates - partially implemented.** A separate supervisor tracks native host
+   attachment and readiness independently of guest lifetime. Warm focus, subfolder IPC, extra windows,
+   detach/reattach, stop, smoke and cancellation are wired; history restores the selected backend.
+   Exclusive heartbeat leases prevent duplicate attachment and permit stale-supervisor recovery.
+   Container generations are checked before attachment and monitored afterward; explicit stop/open
+   recovers external restarts without accepting stale configuration. Doctor exposes container/session
+   state and private host/supervisor log paths; startup preserves actual presenter failure diagnostics.
+   Acceptance: disposable native-host/supervisor crashes, container kill/restart, duplicate exclusion,
+   volume retention, successful upgrade, readiness-failure rollback and cancelled-upgrade recovery.
+   Restored configuration/session receipts match the recovered generation; failed recovery clears them.
+   Rollback is cancellation-shielded, but shared data and startup-task effects are not transactional.
+   Remaining: actual Docker Desktop/daemon-restart acceptance (only a scoped unavailable endpoint is
+   simulated), intended identity flows, bundled/signed
+   native binaries, signed policy distribution, clipboard-file cleanup, multi-monitor/scaling polish.
+   Acceptance: dual-backend end-to-end coverage, explicit unsupported-platform errors and
+   documented limitations before promoting desktop beyond opt-in experimental status.
+
+**Dependencies:** configuration/trust and extension lifecycle above; identity broker transport before
+claiming container account support. The runner receives resolved launches, not repository YAML or credentials.
+
+**Risks:** desktop/code-server state formats, extension compatibility, native binary distribution,
+clipboard-file retention, app-specific Wayland behaviour and single-output scaling. Do not silently
+fall back between backends, share installed extension trees, or make the runner an identity broker.
+
 ## Phase 1 - Core Configuration Engine
 
 **Deliverables**
@@ -116,7 +166,7 @@ executable keybindings, hook side effects and shared-volume rollback limitations
 
 - [x] Validate and activate supported definitions, not preview-only parsing.
 - [x] Extend `packages/core/src/runtime.ts` with non-secret configuration contracts.
-- [x] Add pinned editor configuration adapter under `packages/docker/image/`.
+- [x] Add pinned editor configuration adapter under `packages/editor-backends/images/code-server/`.
 - [x] Add `packages/core/src/trust.ts` and fingerprint-bound host-local grants.
 - [x] Add desired/applied fingerprint and container/start binding.
 - [x] Wire open, cancellation and successful upgrade activation; changed/incomplete

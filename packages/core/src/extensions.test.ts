@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { resolveWorkspace } from '@vspod/workspace';
 import type { ContainerRuntime } from './runtime.ts';
+import type { EditorBackend } from './backend.ts';
 import { assertWorkspaceExtensions, syncWorkspaceExtensions } from './extensions.ts';
 import { inspectConfiguration } from './configuration.ts';
 import { trustConfiguration } from './trust.ts';
@@ -26,6 +27,11 @@ test('extension activation requires matching receipts and exact required install
     ensureAvailable: async () => {}, ensureImage: async () => {}, inspect: async () => ({ ...instance, running }),
     create: async () => {}, start: async () => instance, stop: async () => {},
     exec: async () => 0, logs: async () => 0, replace: async () => instance,
+  };
+  const unexpected = async (): Promise<never> => { throw new Error('No editor activation expected'); };
+  const backend: EditorBackend = {
+    id: 'test-web', vscodeVersion: '1.106.3', runtime,
+    start: unexpected, resume: () => { throw new Error('No session expected'); }, waitForReady: unexpected,
     extensionAdapter: () => ({
       list: async () => installed,
       install: async () => { mutations++; }, uninstall: async () => { mutations++; },
@@ -38,25 +44,26 @@ test('extension activation requires matching receipts and exact required install
     const workspace = await resolveWorkspace(repo);
     const state = join(process.env.VSPOD_STATE_DIR, workspace.id);
     const empty = (await inspectConfiguration(workspace)).resolved;
-    await assertWorkspaceExtensions(runtime, workspace, state, empty);
-    const outcomes = await syncWorkspaceExtensions(runtime, workspace);
+    await assertWorkspaceExtensions(backend, workspace, state, empty);
+    const outcomes = await syncWorkspaceExtensions(backend, workspace);
     assert.deepEqual(outcomes, []);
     assert.deepEqual(installed, [{ id: 'local.manual', version: '1.0.0' }]);
     assert.equal(mutations, 0);
     assert.ok(await readPrivate(join(state, 'extensions-applied.json')));
     running = true;
-    await assert.rejects(syncWorkspaceExtensions(runtime, workspace), { code: 'EXTENSIONS_STOP_REQUIRED' });
+    await assert.rejects(syncWorkspaceExtensions(backend, workspace), { code: 'EXTENSIONS_STOP_REQUIRED' });
     assert.equal(mutations, 0);
     running = false;
     await mkdir(join(repo, '.vspod'));
     await writeFile(join(repo, '.vspod/vspod.yml'), 'schemaVersion: 1\nextensions:\n  required: [test.required@1.2.3]\n  optional: [test.optional]\n');
     const configuration = (await inspectConfiguration(workspace)).resolved;
-    await assert.rejects(syncWorkspaceExtensions(runtime, workspace), { code: 'CONFIG_TRUST_REQUIRED' });
+    await assert.rejects(syncWorkspaceExtensions(backend, workspace), { code: 'CONFIG_TRUST_REQUIRED' });
     await trustConfiguration(workspace, configuration);
-    await assert.rejects(assertWorkspaceExtensions(runtime, workspace, state, configuration), { code: 'EXTENSIONS_SYNC_REQUIRED' });
+    await assert.rejects(assertWorkspaceExtensions(backend, workspace, state, configuration), { code: 'EXTENSIONS_SYNC_REQUIRED' });
     await privateDirectory(state);
     await writePrivate(join(state, 'extensions-applied.json'), {
       schemaVersion: 1,
+      backend: backend.id,
       intentHash: createHash('sha256').update(JSON.stringify(configuration.extensions)).digest('hex'),
       includeOptional: false,
       outcomes: [
@@ -64,11 +71,12 @@ test('extension activation requires matching receipts and exact required install
         { id: 'test.optional', status: 'failed', required: false },
       ],
     });
-    await assert.rejects(assertWorkspaceExtensions(runtime, workspace, state, configuration), { code: 'EXTENSION_REQUIRED_UNAVAILABLE' });
+    await assert.rejects(assertWorkspaceExtensions(backend, workspace, state, configuration), { code: 'EXTENSION_REQUIRED_UNAVAILABLE' });
     installed = [...installed, { id: 'test.required', version: '1.2.3' }];
-    await assertWorkspaceExtensions(runtime, workspace, state, configuration);
+    await assertWorkspaceExtensions(backend, workspace, state, configuration);
     installed = installed.map((item) => item.id === 'test.required' ? { ...item, version: '1.2.4' } : item);
-    await assert.rejects(assertWorkspaceExtensions(runtime, workspace, state, configuration), { code: 'EXTENSION_REQUIRED_UNAVAILABLE' });
+    await assert.rejects(assertWorkspaceExtensions(backend, workspace, state, configuration), { code: 'EXTENSION_REQUIRED_UNAVAILABLE' });
+    await assert.rejects(assertWorkspaceExtensions({ ...backend, id: 'other-editor' }, workspace, state, configuration), { code: 'EXTENSIONS_SYNC_REQUIRED' });
     assert.equal(mutations, 0);
   } finally {
     if (previous === undefined) delete process.env.VSPOD_STATE_DIR; else process.env.VSPOD_STATE_DIR = previous;

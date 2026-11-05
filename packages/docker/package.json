@@ -5,5 +5,5 @@
   "type": "module",
   "exports": "./src/index.ts",
   "scripts": { "build": "tsc --noEmit -p ../../tsconfig.json", "test": "tsx --test src/*.test.ts" },
-  "dependencies": { "@vspod/config": "0.1.0", "@vspod/extensions": "0.1.0", "@vspod/core": "0.1.0", "@vspod/workspace": "0.1.0" }
+  "dependencies": { "@vspod/core": "0.1.0", "@vspod/workspace": "0.1.0" }
 }

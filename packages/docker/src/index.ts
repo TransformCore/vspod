@@ -1,16 +1,22 @@
 import { join } from 'node:path';
 import { installationRoot } from '@vspod/core/installation';
 import { randomBytes } from 'node:crypto';
-import { waitForReady } from '@vspod/core';
 import { setTimeout as delay } from 'node:timers/promises';
-import { execute, attached, operationSignal } from '@vspod/core/process';
-import type { ContainerRuntime, RuntimeInstance, RuntimeConfiguration } from '@vspod/core/runtime';
+import { execute, attached, operationSignal, withCancellation } from '@vspod/core/process';
+import type { ContainerRuntime, RuntimeInstance } from '@vspod/core/runtime';
 import type { Workspace } from '@vspod/workspace';
-import { resolveConfiguration } from '@vspod/config';
-import type { CachedExtensionArtifact, ExtensionRuntimeAdapter } from '@vspod/extensions';
-
-export const IMAGE = 'vspod:4.106.3-node22-config-v2';
 export const OWNER = 'dev.vspod.project';
+
+export interface DockerEnvironment {
+  image: string;
+  buildDirectory: string;
+  volumes: readonly string[];
+  ports: readonly number[];
+  containerSuffix?: string;
+}
+
+export const environmentContainerName = (workspace: Workspace, environment: DockerEnvironment) =>
+  `${workspace.containerName}${environment.containerSuffix ?? ''}`;
 
 export function assertLocalEndpoint(endpoint: string): void {
   if (!endpoint.startsWith('unix:///') || endpoint.includes('\n')) {
@@ -26,20 +32,21 @@ export async function effectiveDockerEndpoint(
   return environment.DOCKER_HOST ?? inspectContext();
 }
 
-export function createArguments(workspace: Workspace): string[] {
+export function createArguments(workspace: Workspace, environment: DockerEnvironment): string[] {
+  const name = environmentContainerName(workspace, environment);
   if (/[\r\n,]/.test(workspace.root)) throw new Error('Repository paths containing commas or newlines are not supported by this spike.');
   return [
-    'create', '--name', workspace.containerName,
+    'create', '--name', name,
     '--label', `${OWNER}=${workspace.id}`,
     '--init', '--user', '1000:1000', '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges',
-    '--publish', '127.0.0.1::8080',
+    ...environment.ports.flatMap((port) => ['--publish', `127.0.0.1::${port}`]),
     '--mount', `type=bind,source=${workspace.root},target=/workspace`,
-    ...['extensions', 'settings', 'state', 'config'].flatMap((kind) => [
-      '--mount', `type=volume,source=${workspace.containerName}-${kind},target=/vspod/${kind}`,
+    ...environment.volumes.flatMap((kind) => [
+      '--mount', `type=volume,source=${name}-${kind},target=/vspod/${kind}`,
     ]),
     '--tmpfs', '/run/vspod:rw,noexec,nosuid,size=1m,uid=1000,gid=1000,mode=0700',
-    '--workdir', '/workspace', IMAGE,
+    '--workdir', '/workspace', environment.image,
   ];
 }
 
@@ -51,6 +58,22 @@ interface DockerInspection {
 }
 
 export class DockerRuntime implements ContainerRuntime {
+  constructor(readonly environment: DockerEnvironment) {}
+
+  protected containerName(workspace: Workspace): string {
+    return environmentContainerName(workspace, this.environment);
+  }
+
+  protected assertOwnership(workspace: Workspace, labels: Record<string, string>): void {
+    if (labels[OWNER] !== workspace.id) {
+      throw new Error(`Container ${this.containerName(workspace)} is not owned by VSPod. It was not changed.`);
+    }
+  }
+
+  protected async createContainer(workspace: Workspace): Promise<void> {
+    await execute('docker', createArguments(workspace, this.environment));
+  }
+
   async ensureAvailable(startProvider = false): Promise<void> {
     const endpoint = await effectiveDockerEndpoint(process.env, async (name) => {
       const contexts = JSON.parse(await execute('docker', ['context', 'inspect', ...(name ? [name] : [])]));
@@ -77,30 +100,32 @@ export class DockerRuntime implements ContainerRuntime {
 
   async ensureImage(options: { rebuild?: boolean } = {}): Promise<void> {
     if (!options.rebuild) {
-      try { await execute('docker', ['image', 'inspect', IMAGE]); return; } catch { operationSignal()?.throwIfAborted(); }
+      try { await execute('docker', ['image', 'inspect', this.environment.image]); return; } catch { operationSignal()?.throwIfAborted(); }
     }
-    await execute('docker', ['build', '--tag', IMAGE, join(installationRoot(), 'packages/docker/image')], {
+    await execute('docker', ['build', '--tag', this.environment.image, join(installationRoot(), this.environment.buildDirectory)], {
       inherit: true, timeout: 900_000,
     });
   }
 
   async inspect(workspace: Workspace): Promise<RuntimeInstance | undefined> {
-    const matches = await execute('docker', ['container', 'ls', '-a', '--filter', `name=^/${workspace.containerName}$`, '--format', '{{.ID}}']);
+    const matches = await execute('docker', ['container', 'ls', '-a', '--filter', `name=^/${this.containerName(workspace)}$`, '--format', '{{.ID}}']);
     if (!matches) return undefined;
-    const item = (JSON.parse(await execute('docker', ['inspect', workspace.containerName])) as DockerInspection[])[0];
-    if (item.Config.Labels[OWNER] !== workspace.id) {
-      throw new Error(`Container ${workspace.containerName} is not owned by VSPod. It was not changed.`);
+    const item = (JSON.parse(await execute('docker', ['inspect', this.containerName(workspace)])) as DockerInspection[])[0];
+    this.assertOwnership(workspace, item.Config.Labels);
+    const ports: Record<string, string> = {};
+    for (const port of this.environment.ports) {
+      const bindings = item.NetworkSettings.Ports[`${port}/tcp`];
+      if (item.State.Running && (!bindings || bindings.length !== 1 || bindings[0].HostIp !== '127.0.0.1')) {
+        throw new Error('Refusing a container endpoint that is not published exclusively on 127.0.0.1.');
+      }
+      if (bindings?.[0]) ports[String(port)] = `http://127.0.0.1:${bindings[0].HostPort}`;
     }
-    const bindings = item.NetworkSettings.Ports['8080/tcp'];
-    if (item.State.Running && (!bindings || bindings.length !== 1 || bindings[0].HostIp !== '127.0.0.1')) {
-      throw new Error('Refusing an editor endpoint that is not published exclusively on 127.0.0.1.');
-    }
-    return { id: item.Id, running: item.State.Running, startedAt: item.State.StartedAt, image: item.Config.Image, compatible: item.Config.Image === IMAGE, url: bindings?.[0] ? `http://127.0.0.1:${bindings[0].HostPort}` : undefined };
+    return { id: item.Id, running: item.State.Running, startedAt: item.State.StartedAt, image: item.Config.Image, compatible: item.Config.Image === this.environment.image, ports };
   }
 
   async create(workspace: Workspace): Promise<void> {
-    for (const kind of ['extensions', 'settings', 'state', 'config']) {
-      const name = `${workspace.containerName}-${kind}`;
+    for (const kind of this.environment.volumes) {
+      const name = `${this.containerName(workspace)}-${kind}`;
       const existing = await execute('docker', ['volume', 'ls', '--filter', `name=^${name}$`, '--format', '{{.Name}}']);
       if (existing) {
         const [volume] = JSON.parse(await execute('docker', ['volume', 'inspect', name]));
@@ -109,97 +134,72 @@ export class DockerRuntime implements ContainerRuntime {
         await execute('docker', ['volume', 'create', '--label', `${OWNER}=${workspace.id}`, name]);
       }
     }
-    await execute('docker', createArguments(workspace));
+    await this.createContainer(workspace);
   }
 
-  async start(workspace: Workspace, credential: string, configuration: RuntimeConfiguration = resolveConfiguration()): Promise<RuntimeInstance> {
-    if (!/^[a-f0-9]{64}$/.test(credential)) throw new Error('Invalid runtime credential.');
-    await execute('docker', ['start', workspace.containerName]);
-    await execute('docker', ['exec', '-i', workspace.containerName, 'node', '/opt/vspod/configure.mjs'], {
-      input: JSON.stringify({ password: credential, configuration }),
-    });
+  async start(workspace: Workspace): Promise<RuntimeInstance> {
+    await execute('docker', ['start', this.containerName(workspace)]);
     const instance = await this.inspect(workspace);
-    if (!instance?.url) throw new Error('Docker did not allocate a loopback editor port.');
+    if (!instance?.running) throw new Error('Docker did not start the workspace container.');
     return instance;
   }
 
   async stop(workspace: Workspace): Promise<void> {
     const instance = await this.inspect(workspace);
-    if (instance?.running) await execute('docker', ['stop', '--time', '10', workspace.containerName]);
+    if (instance?.running) await execute('docker', ['stop', '--time', '10', this.containerName(workspace)]);
   }
 
   async runStartupTask(workspace: Workspace, command: string): Promise<void> {
     await execute('docker', ['exec', '-i', '--user', '1000:1000', '--workdir', '/workspace',
-      workspace.containerName, '/bin/sh', '-es'], { input: command, timeout: 600_000 });
+      this.containerName(workspace), '/bin/sh', '-es'], { input: command, timeout: 600_000 });
   }
 
-  extensionAdapter(workspace: Workspace): ExtensionRuntimeAdapter {
-    const run = async (command: string[], artifact?: CachedExtensionArtifact): Promise<string> => {
-      if (artifact && /[\r\n,]/.test(artifact.cachePath)) throw new Error('Extension cache paths containing commas or newlines are not supported.');
-      return execute('docker', [
-        'run', '--rm', '--init', '--user', '1000:1000', '--cap-drop', 'ALL',
-        '--security-opt', 'no-new-privileges', '--network', 'none', '--read-only',
-        '--env', 'HOME=/tmp', '--env', 'XDG_CONFIG_HOME=/tmp/config',
-        '--pids-limit', '128', '--memory', '512m', '--cpus', '2',
-        '--tmpfs', '/tmp:rw,noexec,nosuid,size=256m,uid=1000,gid=1000,mode=0700',
-        '--mount', `type=volume,source=${workspace.containerName}-extensions,target=/vspod/extensions`,
-        ...(artifact ? ['--mount', `type=bind,source=${artifact.cachePath},target=/tmp/artifact.vsix,readonly`] : []),
-        '--entrypoint', '/usr/bin/code-server', IMAGE,
-        '--config', '/opt/vspod/extensions.yml',
-        '--user-data-dir', '/tmp/user-data', '--extensions-dir', '/vspod/extensions',
-        '--disable-telemetry', '--disable-update-check', ...command,
-      ], { timeout: 300_000 });
-    };
-    return {
-      list: async () => {
-        const output = await run(['--list-extensions', '--show-versions']);
-        return output.split(/\r?\n/).filter(Boolean).map((line) => {
-          const match = /^([a-z0-9][a-z0-9-]*\.[a-z0-9][a-z0-9-]*)@([0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?)$/i.exec(line.trim());
-          if (!match) throw new Error('The editor returned an invalid installed-extension list.');
-          return { id: match[1].toLowerCase(), version: match[2] };
-        });
-      },
-      install: async (artifact) => { await run(['--install-extension', '/tmp/artifact.vsix', '--force'], artifact); },
-      uninstall: async (id) => { await run(['--uninstall-extension', id]); },
-    };
-  }
-
-  async replace(workspace: Workspace, credential: string, configuration?: RuntimeConfiguration): Promise<RuntimeInstance> {
-    const previous = await this.inspect(workspace);
-    if (!previous) throw new Error('No workspace exists to upgrade. Run vspod open first.');
-    const backup = `${workspace.containerName}-previous-${randomBytes(4).toString('hex')}`;
-    await this.stop(workspace);
-    await execute('docker', ['rename', workspace.containerName, backup]);
-    let created = false;
-    let replacement: RuntimeInstance;
-    try {
-      await this.create(workspace);
-      created = true;
-      replacement = await this.start(workspace, credential, configuration);
-      await waitForReady(this, workspace, replacement.url!);
-    } catch (error) {
-      if (created) await execute('docker', ['rm', '-f', workspace.containerName]);
-      await execute('docker', ['rename', backup, workspace.containerName]);
-      if (previous.running) await this.start(workspace, credential);
-      throw new Error(`The upgrade did not finish. The previous container was restored; persistent volumes were retained. ${error instanceof Error ? error.message : ''}`);
-    }
-    try { await execute('docker', ['rm', backup]); } catch {
-      console.warn(`Upgrade succeeded. The stopped recovery container ${backup} was retained because cleanup failed.`);
-    }
-    return replacement;
+  async replace(workspace: Workspace, activate: () => Promise<void>): Promise<RuntimeInstance> {
+    const signal = operationSignal();
+    signal?.throwIfAborted();
+    return withCancellation(undefined, async () => {
+      const previous = await this.inspect(workspace);
+      if (!previous) throw new Error('No workspace exists to upgrade. Run vspod open first.');
+      const backup = `${this.containerName(workspace)}-previous-${randomBytes(4).toString('hex')}`;
+      await this.stop(workspace);
+      await execute('docker', ['rename', this.containerName(workspace), backup]);
+      let created = false;
+      let replacement: RuntimeInstance;
+      try {
+        await this.create(workspace);
+        created = true;
+        await withCancellation(signal, activate);
+        const current = await this.inspect(workspace);
+        if (!current?.running) throw new Error('Replacement activation did not start the container.');
+        replacement = current;
+      } catch (error) {
+        if (created) await execute('docker', ['rm', '-f', this.containerName(workspace)]);
+        await execute('docker', ['rename', backup, this.containerName(workspace)]);
+        if (previous.running) {
+          try { await activate(); } catch (recovery) {
+            throw new Error('The previous container was restored, but editor reactivation failed. Run vspod stop before retrying.', { cause: recovery });
+          }
+        }
+        throw new Error(`The upgrade did not finish. The previous container was restored; persistent volumes were retained. ${error instanceof Error ? error.message : ''}`);
+      }
+      try { await execute('docker', ['rm', backup]); } catch {
+        console.warn(`Upgrade succeeded. The stopped recovery container ${backup} was retained because cleanup failed.`);
+      }
+      return replacement;
+    });
   }
 
   async remove(workspace: Workspace): Promise<void> {
     if (await this.inspect(workspace)) {
       await this.stop(workspace);
-      await execute('docker', ['rm', workspace.containerName]);
+      await execute('docker', ['rm', this.containerName(workspace)]);
     }
   }
 
   async removeTestVolumes(workspace: Workspace): Promise<void> {
     if (!workspace.name.startsWith('vspod-test-')) throw new Error('Only temporary test volumes may be deleted by the spike.');
-    for (const kind of ['extensions', 'settings', 'state', 'config']) {
-      const name = `${workspace.containerName}-${kind}`;
+    for (const kind of this.environment.volumes) {
+      const name = `${this.containerName(workspace)}-${kind}`;
       const [volume] = JSON.parse(await execute('docker', ['volume', 'inspect', name]));
       if (volume.Labels?.[OWNER] !== workspace.id) throw new Error('Refusing to delete an unowned volume.');
       await execute('docker', ['volume', 'rm', name]);
@@ -208,11 +208,11 @@ export class DockerRuntime implements ContainerRuntime {
 
   async exec(workspace: Workspace, command: string[], interactive = false): Promise<number> {
     if (!(await this.inspect(workspace))?.running) throw new Error('Workspace is stopped. Run vspod open first.');
-    return attached('docker', ['exec', ...(interactive ? [process.stdin.isTTY && process.stdout.isTTY ? '-it' : '-i'] : []), '--workdir', '/workspace', workspace.containerName, ...command]);
+    return attached('docker', ['exec', ...(interactive ? [process.stdin.isTTY && process.stdout.isTTY ? '-it' : '-i'] : []), '--workdir', '/workspace', this.containerName(workspace), ...command]);
   }
 
   async logs(workspace: Workspace, follow = false): Promise<number> {
     if (!await this.inspect(workspace)) throw new Error('No workspace container exists. Run vspod open first.');
-    return attached('docker', ['logs', '--tail', '100', ...(follow ? ['--follow'] : []), workspace.containerName]);
+    return attached('docker', ['logs', '--tail', '100', ...(follow ? ['--follow'] : []), this.containerName(workspace)]);
   }
 }

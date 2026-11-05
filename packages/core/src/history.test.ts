@@ -40,3 +40,26 @@ test('history remembers exact folders, merges concurrent updates and excludes gr
     await rm(root, { force: true, recursive: true });
   }
 });
+
+test('history keeps backend-specific windows and restore records for the same folder', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'vspod-history-backends-'));
+  const previous = process.env.VSPOD_STATE_DIR;
+  process.env.VSPOD_STATE_DIR = root;
+  const workspace = { id: 'b'.repeat(20), root: '/projects/repo', name: 'repo', containerName: 'vspod-test' };
+  try {
+    await rememberFolder(workspace, workspace.root, 'launch-web', 'web/generation', 'code-server');
+    await rememberFolder(workspace, workspace.root, 'launch-native', 'native/generation', 'desktop');
+    for (const [window, stage] of [['launch-web', 'closed'], ['launch-native', 'editor-ready']]) {
+      const directory = join(root, workspace.id, window);
+      await privateDirectory(directory);
+      await writePrivate(join(directory, 'ack.json'), { stage });
+    }
+    assert.equal((await recentFolders()).length, 2);
+    await refreshWindowHistory();
+    assert.deepEqual((await restorableFolders()).map((entry) => entry.backend), ['desktop']);
+    assert.equal(await closeWindows({ id: workspace.id, backend: 'code-server' }), 0);
+  } finally {
+    if (previous === undefined) delete process.env.VSPOD_STATE_DIR; else process.env.VSPOD_STATE_DIR = previous;
+    await rm(root, { force: true, recursive: true });
+  }
+});

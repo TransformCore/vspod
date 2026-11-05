@@ -19,11 +19,14 @@ test('Docker context takes precedence over DOCKER_HOST before checking locality'
   assert.equal(await effectiveDockerEndpoint({}, async () => 'unix:///default.sock'), 'unix:///default.sock');
 });
 
-test('container has one repository bind and four isolated volumes, without secrets', () => {
-  const args = createArguments({ id: '123', name: 'project', root: '/projects/with spaces', containerName: 'vspod-123' });
+test('container uses caller-selected image, volumes and ports without editor assumptions', () => {
+  const args = createArguments({ id: '123', name: 'project', root: '/projects/with spaces', containerName: 'vspod-123' }, {
+    image: 'example:1', buildDirectory: 'example', volumes: ['data'], ports: [],
+  });
   assert.equal(args.filter((arg) => arg.startsWith('type=bind,')).length, 1);
-  assert.equal(args.filter((arg) => arg.startsWith('type=volume,')).length, 4);
-  assert.ok(args.includes('127.0.0.1::8080'));
+  assert.equal(args.filter((arg) => arg.startsWith('type=volume,')).length, 1);
+  assert.ok(!args.includes('--publish'));
+  assert.equal(args.at(-1), 'example:1');
   assert.ok(args.includes('1000:1000'));
   assert.ok(args.includes('no-new-privileges'));
   assert.ok(!args.some((arg) => /PASSWORD|\.ssh|docker.sock|privileged/.test(arg)));

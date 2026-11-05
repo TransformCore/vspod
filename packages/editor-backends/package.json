@@ -1,0 +1,19 @@
+{
+  "name": "@vspod/editor-backends",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "build": "tsc --noEmit -p ../../tsconfig.json",
+    "test": "tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "@vspod/app-runner": "0.1.0",
+    "@vspod/core": "0.1.0",
+    "@vspod/config": "0.1.0",
+    "@vspod/docker": "0.1.0",
+    "@vspod/extensions": "0.1.0",
+    "@vspod/workspace": "0.1.0"
+  }
+}

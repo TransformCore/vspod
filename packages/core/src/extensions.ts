@@ -4,7 +4,8 @@ import { ExtensionManager, RequiredExtensionFailure } from '@vspod/extensions';
 import type { ExtensionArtifactApproval, ExtensionArtifactApprovalRequest, ExtensionOutcome } from '@vspod/extensions';
 import type { ResolvedConfiguration } from '@vspod/config';
 import type { Workspace } from '@vspod/workspace';
-import type { ContainerRuntime } from './runtime.ts';
+import type { EditorBackend } from './backend.ts';
+import { backendStateDirectory } from './backend.ts';
 import { configurationDirectory } from './profiles.ts';
 import { inspectConfiguration } from './configuration.ts';
 import { assertConfigurationTrust } from './trust.ts';
@@ -13,6 +14,7 @@ import { VspodError } from './errors.ts';
 
 interface ExtensionReceipt {
   schemaVersion: 1;
+  backend: string;
   intentHash: string;
   includeOptional: boolean;
   outcomes: readonly ExtensionOutcome[];
@@ -22,15 +24,15 @@ const intentHash = (configuration: ResolvedConfiguration) =>
   createHash('sha256').update(JSON.stringify(configuration.extensions)).digest('hex');
 const receiptPath = (state: string) => join(state, 'extensions-applied.json');
 
-export async function assertWorkspaceExtensions(runtime: ContainerRuntime, workspace: Workspace, state: string, configuration: ResolvedConfiguration): Promise<void> {
+export async function assertWorkspaceExtensions(backend: EditorBackend, workspace: Workspace, state: string, configuration: ResolvedConfiguration): Promise<void> {
   const receipt = await readPrivate<ExtensionReceipt>(receiptPath(state), 262_144);
   if (!configuration.extensions.length && !receipt) return;
-  if (receipt?.schemaVersion !== 1 || receipt.intentHash !== intentHash(configuration) || !Array.isArray(receipt.outcomes)) {
+  if (receipt?.schemaVersion !== 1 || receipt.backend !== backend.id || receipt.intentHash !== intentHash(configuration) || !Array.isArray(receipt.outcomes)) {
     throw new VspodError('EXTENSIONS_SYNC_REQUIRED', 'Extension choices have not been reconciled.',
       'Run vspod extensions sync to review exact artifacts before opening, or use vspod open --restricted.');
   }
-  if (!runtime.extensionAdapter) throw new VspodError('EXTENSIONS_RUNTIME_UNSUPPORTED', 'The runtime cannot verify managed extensions.', 'Use the maintained Docker runtime.');
-  const installed = await runtime.extensionAdapter(workspace).list();
+  if (!backend.extensionAdapter) throw new VspodError('EXTENSIONS_RUNTIME_UNSUPPORTED', 'The backend cannot verify managed extensions.', 'Use the maintained code-server backend.');
+  const installed = await backend.extensionAdapter(workspace).list();
   for (const intent of configuration.extensions.filter((item) => item.required || item.selected)) {
     const outcome = receipt.outcomes.find((item) => item.id === intent.id);
     if (!outcome || !['installed', 'unchanged', 'preserved'].includes(outcome.status) ||
@@ -49,15 +51,17 @@ export interface SyncExtensionsOptions {
   approveArtifacts?: (artifacts: readonly ExtensionArtifactApprovalRequest[]) => Promise<readonly ExtensionArtifactApproval[]>;
 }
 
-export async function syncWorkspaceExtensions(runtime: ContainerRuntime, workspace: Workspace, options: SyncExtensionsOptions = {}): Promise<readonly ExtensionOutcome[]> {
-  return withProjectLock(workspace, async (state) => {
+export async function syncWorkspaceExtensions(backend: EditorBackend, workspace: Workspace, options: SyncExtensionsOptions = {}): Promise<readonly ExtensionOutcome[]> {
+  const runtime = backend.runtime;
+  return withProjectLock(workspace, async (rootState) => {
+    const state = await backendStateDirectory(rootState, backend);
     const configuration = (await inspectConfiguration(workspace)).resolved;
     await assertConfigurationTrust(workspace, configuration);
     await runtime.ensureAvailable();
     const instance = await runtime.inspect(workspace);
     if (instance?.running) throw new VspodError('EXTENSIONS_STOP_REQUIRED', 'Stop the workspace before changing managed extensions.',
       'Finish terminal work, run vspod stop, then retry. No running extensions were changed.');
-    if (!runtime.extensionAdapter) throw new VspodError('EXTENSIONS_RUNTIME_UNSUPPORTED', 'The runtime cannot manage extensions.', 'Use the maintained Docker runtime.');
+    if (!backend.extensionAdapter) throw new VspodError('EXTENSIONS_RUNTIME_UNSUPPORTED', 'The backend cannot manage extensions.', 'Use the maintained code-server backend.');
     await runtime.ensureImage();
     if (!instance) await runtime.create(workspace);
     const root = configurationDirectory();
@@ -70,7 +74,7 @@ export async function syncWorkspaceExtensions(runtime: ContainerRuntime, workspa
     const intents = configuration.extensions.map((item) => ({ ...item, selected: item.selected || includeOptional }));
     const manager = new ExtensionManager({
       cacheDirectory, manifestPath: join(state, 'managed-extensions.json'),
-      vscodeVersion: '1.106.3', adapter: runtime.extensionAdapter(workspace),
+      vscodeVersion: backend.vscodeVersion, adapter: backend.extensionAdapter(workspace),
       approveArtifacts: options.approveArtifacts,
     });
     let outcomes: readonly ExtensionOutcome[];
@@ -81,7 +85,7 @@ export async function syncWorkspaceExtensions(runtime: ContainerRuntime, workspa
         `${error.failed.map((item) => `${item.id}: ${item.status}${item.message ? ` (${item.message})` : ''}`).join('; ')}. No successful receipt was recorded; retry sync after reviewing approvals or registry availability.`);
     }
     await writePrivate(receiptPath(state), {
-      schemaVersion: 1, intentHash: intentHash(configuration), includeOptional, outcomes,
+      schemaVersion: 1, backend: backend.id, intentHash: intentHash(configuration), includeOptional, outcomes,
     } satisfies ExtensionReceipt);
     return outcomes;
   });

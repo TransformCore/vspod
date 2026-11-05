@@ -1,0 +1,10 @@
+[package]
+name = "vspod-ironrdp-api-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+ironrdp = { version = "=0.17.0", default-features = false, features = ["core", "pdu", "connector", "session", "graphics", "cliprdr", "displaycontrol", "input", "dvc"] }
