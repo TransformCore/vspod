@@ -249,7 +249,9 @@ export async function integrations({ name, root, execute, wait, output, send }) 
     await evidence(`integrations-menu-${y}`);
     await key(53);
     await delay(500);
-    return { screen: state.screen, menu: state.windows[menu], pointer: windowY + contentHeight - 600 };
+    const [mx, my, mw, mh] = state.windows[menu];
+    const [gx, gy, gw, gh] = state.geometry?.[menu] ?? [0, 0, mw, mh];
+    return { screen: state.screen, menu: [mx + gx, my + mh - gy - gh, gw, gh], pointer: windowY + contentHeight - 600 };
   };
   const { screen: [, , , screenHeight] } = await frames();
   const middle = await contextMenu(100);

@@ -5,6 +5,7 @@
   "type": "module",
   "exports": "./src/index.ts",
   "scripts": {
+    "build:host": "node build-host.mjs",
     "build": "tsc --noEmit -p ../../tsconfig.json",
     "test": "tsx --test src/*.test.ts"
   },

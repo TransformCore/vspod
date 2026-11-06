@@ -1,0 +1,11 @@
+/* WKWebView's default user agent lacks Safari, so VS Code omits its Safari overflow workaround.
+   Keep the titlebar above editor compositor layers, but below workbench dialogs and quick input. */
+.monaco-workbench.web .part.titlebar {
+  position: relative;
+  z-index: 2500;
+  overflow: visible;
+}
+
+.monaco-workbench.web .part.titlebar > .titlebar-container {
+  overflow: visible;
+}

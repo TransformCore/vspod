@@ -11,7 +11,7 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && rm -f /etc/sudoers.d/nopasswd \
     && chmod u-s /usr/local/bin/fixuid \
     && node --version && npm --version && git --version
-COPY --chown=1000:1000 bootstrap.mjs configure.mjs apply-configuration.mjs patch-editor.mjs extensions.yml /opt/vspod/
+COPY --chown=1000:1000 bootstrap.mjs configure.mjs apply-configuration.mjs patch-editor.mjs workbench-overrides.css extensions.yml /opt/vspod/
 RUN node /opt/vspod/patch-editor.mjs
 USER 1000:1000
 WORKDIR /workspace

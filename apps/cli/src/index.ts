@@ -8,7 +8,7 @@ import { CodeServerBackend, DesktopBackend, presentNative } from '@vspod/editor-
 import { openWorkspace, stopWorkspace, recentFolders, restorableFolders,
   completeOnboarding, readCatalog, explainError, VspodError, upgradeWorkspace, closeWindows,
   configurationDirectory, createProfile, listProfiles, selectedProfile, switchProfile, inspectConfiguration,
-  migrateWorkspace, syncWorkspaceExtensions } from '@vspod/core';
+  migrateWorkspace, syncWorkspaceExtensions, watchWindowLifecycle } from '@vspod/core';
 import { trustConfiguration, revokeConfigurationTrust, setCompatibility } from '@vspod/core';
 import type { EditorBackend, OpenOptions, StartupProgress } from '@vspod/core';
 import { execute } from '@vspod/core/process';
@@ -28,6 +28,8 @@ function selectedBackend(fallback = 'code-server'): EditorBackend {
 }
 program.command('__present-native', { hidden: true }).argument('<directory>')
   .action(async (directory: string) => { await presentNative(directory); });
+program.command('__watch-window', { hidden: true }).argument('<directory>')
+  .action(async (directory: string) => { await watchWindowLifecycle(new CodeServerBackend(), directory); });
 const info = (message: string) => interactive ? prompt.log.info(message) : console.log(message);
 
 const extensions = program.command('extensions').description('Reconcile approved extensions while the workspace is stopped');
@@ -348,8 +350,8 @@ program.command('restore').description('Reopen the folders from your last active
     info(`Restored ${restored} folder${restored === 1 ? '' : 's'}.`);
   });
 
-program.command('quit').description('Remember and close VSPod windows, keeping environments warm')
-  .action(async () => { const count = await closeWindows(); info(`Closed ${count} window${count === 1 ? '' : 's'}. Environments stay warm; use vspod restore to return.`); });
+program.command('quit').description('Remember and close VSPod windows, stopping their environments')
+  .action(async () => { const count = await closeWindows(); info(`Closed ${count} window${count === 1 ? '' : 's'}. Environments stop when their last window closes; use vspod restore to return.`); });
 
 program.command('stop').argument('[directory]', 'Git repository', '.').action(async (directory: string) => {
   await stopWorkspace(selectedBackend(), directory);
@@ -417,7 +419,7 @@ program.command('setup').description('First-run checks and native app setup')
     try { await (backend.nativePresenter ? backend.nativePresenter.check() : access(desktopBinary())); } catch {
       info('Building the native app. The first build may take a few minutes.');
       await execute('npm', ['--prefix', installationRoot(), 'run',
-        ...(backend.nativePresenter ? ['build:host', '--workspace', '@vspod/app-runner'] : ['desktop:package'])],
+        ...(backend.nativePresenter ? ['desktop:host'] : ['desktop:package'])],
       { inherit: true, timeout: 900_000 });
     }
     if (!await checkInstallation()) { process.exitCode = 1; return; }

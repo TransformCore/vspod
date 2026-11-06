@@ -3,12 +3,12 @@ import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DockerAppRunner } from '@vspod/app-runner';
-import { installationRoot } from '@vspod/core/installation';
 import { privateDirectory, readPrivate, writePrivate } from '@vspod/core/state';
 import type { EditorPresentation } from '@vspod/core/backend';
-import { DESKTOP_INTEGRATIONS } from './desktop.ts';
+import { DESKTOP_INTEGRATIONS, nativeHostBinary } from './desktop.ts';
 import { acquireNativeAttachment } from '@vspod/core/native';
-import { explainError, VspodError } from '@vspod/core';
+import { explainError, VspodError, stopAfterLastWindow } from '@vspod/core';
+import { DesktopBackend } from './desktop.ts';
 
 /** Separate supervisor keeps host IPC alive after the opening CLI exits. */
 export async function presentNative(directory: string): Promise<void> {
@@ -23,6 +23,7 @@ export async function presentNative(directory: string): Promise<void> {
   let release: (() => Promise<void>) | undefined;
   let compromised = false;
   let runtimeSession: string | undefined, container: string | undefined;
+  let stopOnClose = false;
   const runner = new DockerAppRunner();
   let nextProbe = 0;
   const stop = () => {
@@ -44,7 +45,7 @@ export async function presentNative(directory: string): Promise<void> {
         await writePrivate(join(directory, 'response.json'), { id: request.id });
         return;
       }
-      const session = await readPrivate<{ status: string; backend: string; runtimeSession?: string; presentation?: EditorPresentation }>(join(directory, 'session.json'));
+      const session = await readPrivate<{ status: string; backend: string; runtimeSession?: string; stopOnClose?: boolean; presentation?: EditorPresentation }>(join(directory, 'session.json'));
       if (session?.status === 'error') throw new Error('Workspace activation failed before native attachment.');
       if (session?.status === 'ready') {
         if (session.backend !== 'desktop' || session.presentation?.kind !== 'native' ||
@@ -54,6 +55,8 @@ export async function presentNative(directory: string): Promise<void> {
         }
         release = await acquireNativeAttachment(dirname(directory), (error) => { compromised = true; failure = error; stop(); });
         runtimeSession = session.runtimeSession;
+        stopOnClose = session.stopOnClose === true;
+        if (stopOnClose) await writePrivate(join(directory, 'lifetime-ack.json'), { stage: 'watching', pid: process.pid });
         container = session.presentation.sessionId;
         const instance = await runner.inspect(container);
         if (!instance?.running || `${instance.id}/${instance.startedAt}` !== runtimeSession) {
@@ -63,7 +66,7 @@ export async function presentNative(directory: string): Promise<void> {
         await writePrivate(join(dirname(directory), 'desktop/attachment.json'), {
           directory: basename(directory), runtimeSession,
         });
-        host = await runner.attach(join(installationRoot(), 'packages/app-runner/dist/app-host'),
+        host = await runner.attach(nativeHostBinary(),
           directory, { container: session.presentation.sessionId, protocol: 'wayland', integrations: DESKTOP_INTEGRATIONS },
           { stderr: 'pipe' });
         deadline = Date.now() + 60_000;
@@ -127,9 +130,18 @@ export async function presentNative(directory: string): Promise<void> {
     if (failure) throw failure;
     await writePrivate(ackPath, { stage: 'closed', pid: process.pid });
     if (handled && closing) await writePrivate(join(directory, 'response.json'), { id: handled });
+    if (release && !compromised) {
+      await release();
+      release = undefined;
+    }
+    if (stopOnClose && framed) {
+      const stopped = await stopAfterLastWindow(new DesktopBackend(), directory);
+      await writePrivate(join(directory, 'lifetime-ack.json'), { stage: 'closed', stopped });
+    }
   } catch (error) {
     const explanation = explainError(error);
     await writePrivate(ackPath, { stage: 'error', message: explanation.title, code: explanation.code, hint: explanation.hint });
+    if (stopOnClose) await writePrivate(join(directory, 'lifetime-ack.json'), { stage: 'error', ...explanation });
     throw error;
   } finally {
     process.off('SIGTERM', stop);

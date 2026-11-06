@@ -1,0 +1,23 @@
+# Rust library, service or CLI. Copy to .vspod/vspod.yml.
+schemaVersion: 1
+name: rust-project
+
+extensions:
+  required:
+    - rust-lang.rust-analyzer
+    - tamasfe.even-better-toml
+  optional:
+    - redhat.vscode-yaml
+    - ms-azuretools.vscode-docker
+
+# Provision Rust, Cargo, rustfmt and any native libraries inside the container.
+# Language-server availability still depends on a compatible extension artifact
+# and toolchain; listing an extension does not provision them.
+settings:
+  editor.tabSize: 4
+  editor.insertSpaces: true
+  editor.detectIndentation: true
+  editor.formatOnSave: false
+  files.insertFinalNewline: true
+
+# No automatic cargo build: build scripts and procedural macros execute code.

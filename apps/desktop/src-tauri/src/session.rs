@@ -187,7 +187,7 @@ pub fn matches_session_cookie(cookie: &Cookie<'_>, name: &str, value: &str) -> b
 pub fn acknowledge(path: &Path, stage: &str, message: &str) -> Result<(), String> {
     write_status(
         path.with_file_name("ack.json"),
-        serde_json::json!({"stage": stage, "message": message}),
+        serde_json::json!({"stage": stage, "message": message, "pid": std::process::id()}),
     )
 }
 

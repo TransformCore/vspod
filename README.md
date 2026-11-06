@@ -70,7 +70,7 @@ vspod open --recent         # Choose a remembered folder (latest in noninteracti
 vspod open --new-window     # Create a separate native window
 vspod recent                # List remembered folders; --json for automation
 vspod reopen                # Return to the most recently opened folder
-vspod quit                  # Remember and close windows; keep environments warm
+vspod quit                  # Remember and close windows; stop their environments
 vspod restore               # Reopen the last saved window set
 vspod stop                  # Stop this repository; retain its volumes
 vspod logs --follow         # Stream the last 100 lines and subsequent output
@@ -84,9 +84,12 @@ handshake. A warm open skips image building/preparation. Use `--new-window` to
 override focus reuse. Subfolders reopen at their exact path while sharing the
 repository container; only the repository root is mounted.
 
-Closing a native window leaves its environment running. `quit` saves the active
-folder set and closes tracked windows gracefully; `restore` reopens each saved
-folder once, in up to eight folders, reusing any live window. It does not duplicate
+Closing the last window for a repository/backend stops its container and background terminals.
+Closing one of several windows keeps that shared container running. Repository files, settings,
+extensions and persistent volumes are retained; reopening restarts the same container quickly.
+`quit` saves the active folder set, closes tracked windows gracefully and waits for last-window
+shutdown; `restore` reopens each saved folder once, in up to eight folders, reusing any live window.
+Approved startup tasks run again when the stopped environment restarts. It does not duplicate
 multiple windows of the same folder. Recently opened folders are capped at 30,
 with owner-only on-disk history containing paths but no credentials. Missing or
 unavailable folders during restore are reported without blocking the others.
@@ -122,6 +125,11 @@ This runs desktop VS Code inside the repository container, with individual macOS
 by the generic Swift/Metal helper. It does not embed desktop pixels in Tauri or start the playground.
 The maintained image installs pinned VS Code during image build, not on every workspace launch.
 
+The native presenter is packaged as a local `VSPod.app`, with the same Dock icon and application
+name as the web shell. Build it with `npm run desktop:host` (also handled by desktop-backend setup).
+The application menu shows `Quit VSPod`; window titles retain the guest editor's document/project
+name. This development bundle is not Developer ID signed or notarized.
+
 ```sh
 vspod setup --backend desktop
 vspod open /path/to/repository --backend desktop
@@ -148,10 +156,11 @@ configuration source, not reapplied independently. Required accounts still fail 
 does not inject credentials or provide editor OAuth callbacks.
 
 Warm open focuses the existing helper; `--new-window` asks the guest editor for another window on
-the same attachment. Subfolders use editor IPC and the same helper. `quit` detaches the helper and
-keeps the guest warm; reopening reattaches to the live windows. Closing the guest application's final
-window can end the application/container. `--smoke` creates and closes a fresh attachment without
-changing history; detach an already attached desktop workspace with `quit` before smoke-testing it.
+the same attachment. Subfolders use editor IPC and the same helper. Closing an individual guest
+window keeps the environment running while other windows remain. Closing the final window or
+using `quit` stops the environment. `--smoke` is a validation-only exception: it creates and closes
+a fresh attachment without stopping the guest or changing history; close an already attached
+desktop workspace with `quit` before smoke-testing it.
 Cancellation stops a guest started by that open, not one that was already running.
 
 Attachments have an exclusive, heartbeat-backed lease independent of recent-folder history.
@@ -182,6 +191,22 @@ selected automatically. No environment variable is required. Advanced host confi
 Unset a previous override to use the bundled default. Policy changes require explicit container
 recreation/upgrade; stopping and starting an existing container does not change its Docker policy.
 
+Desktop menus preserve transparent corners and the complete Linux client-drawn shadow, without
+adding a second macOS shadow. The web backend also keeps enabled menu-bar dropdowns above editor
+panes, including in WKWebView. Existing environments need an explicit upgrade to receive these
+image changes; upgrade only the backends you use:
+
+```sh
+npm run vspod -- upgrade . --backend desktop
+npm run vspod -- upgrade . --backend code-server
+```
+
+These upgrades preserve repository volumes. Build the current native helper with
+`npm run desktop:host` before reopening the desktop backend.
+The desktop image also records the checksum of VSPod's intentional editor patch, preserving
+installation-integrity checking without the false "installation appears to be corrupt" warning.
+If an older desktop environment shows that warning, upgrade it rather than disabling the check.
+
 This is macOS-only, locally built and experimental. Neither
 unconfined seccomp nor Chromium's `--no-sandbox` is used. Signed helper distribution,
 multi-monitor/scaling polish, menu-based clipboard import, drag-out and full cursor surfaces remain
@@ -189,6 +214,43 @@ release gates. Microsoft's downloaded VS Code distribution retains its own licen
 does not redistribute its binaries or promise proprietary extension support.
 
 ## Configuration And Profiles
+
+This project's copyable [example repository definition](docs/examples/vspod.yml) lists Swift,
+Rust, Python, C/C++, shell, YAML, TOML, Docker and formatting extensions. TypeScript/JavaScript,
+JSON, HTML, CSS and Markdown support is built in. The example is not activated automatically:
+
+Other copyable project definitions:
+
+| Project | Example | Main extensions |
+| --- | --- | --- |
+| Node.js / TypeScript API or CLI | [nodejs.yml](docs/examples/nodejs.yml) | ESLint; optional Prettier |
+| Python package or API | [python.yml](docs/examples/python.yml) | Python and basedpyright |
+| Rust library, service or CLI | [rust.yml](docs/examples/rust.yml) | rust-analyzer and TOML |
+| React / TypeScript frontend | [frontend.yml](docs/examples/frontend.yml) | ESLint and Prettier |
+
+Copy the chosen file to your project's `.vspod/vspod.yml`, change its name and review its extension
+list. The following commands use this repository's example:
+
+```sh
+mkdir -p .vspod
+cp docs/examples/vspod.yml .vspod/vspod.yml
+npm run vspod -- config explain .
+npm run vspod -- stop . --backend desktop
+npm run vspod -- extensions sync . --backend desktop --include-optional
+```
+
+Use `--backend code-server` instead for the web editor. Review the exact executable artifacts
+when prompted; noninteractive approval requires `--approve`. Extensions are installed separately
+for each backend, and optional extensions can be removed from the example before activation.
+Extension identifiers and current engine/platform metadata were checked against Open VSX; this is
+not a claim of runtime acceptance for every extension. VSPod currently accepts universal VSIX
+packages only. Unpinned requests resolve during sync and become immutable managed pins; future
+updates require explicit `vspod extensions update`.
+
+Extensions do not install the project's language toolchains or provide macOS SDKs inside Linux.
+Swift/AppKit/Metal/Keychain and Tauri macOS builds still run on the host with Xcode command-line
+tools. Docker tooling does not expose the host Docker socket. These examples deliberately declare
+no credentials, account requirements or automatic dependency-installation hooks.
 
 ```sh
 vspod profile
@@ -343,6 +405,9 @@ windows and verifies extension activation, editing, a terminal command, warm foc
 subfolder reopening and CLI quit/restore. Docker tests cover credential rotation,
 volume persistence, replacement/rollback and independent repositories. Startup
 cancellation is checked against both newly started and already-running backends.
+The native suite also uses system WKWebView with two real editor panes to verify menu dropdown
+hit-testing over editor content. Desktop light/dark popup corners, shadow pixels and input alignment
+are covered separately by `VSPOD_DESKTOP_TEST=1 npx tsx --test tests/desktop-menus.test.ts`.
 The registry test downloads ESLint 3.0.34 from Open VSX and verifies exact approval,
 offline installation and managed-pin reuse; it needs network access and Docker.
 The Docker suite also verifies a locally constructed VSIX without registry access.

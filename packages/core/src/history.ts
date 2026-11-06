@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { privateDirectory, readPrivate, stateDirectory, withProjectLock, writePrivate } from './state.ts';
 import type { Workspace } from '@vspod/workspace';
 import { requestNativeAttachment } from './native-attachment.ts';
+import { waitForWindowShutdown } from './window-lifecycle.ts';
 
 export interface RecentFolder {
   id: string;
@@ -65,7 +66,7 @@ export async function rememberFolder(workspace: Workspace, folder: string, launc
   });
 }
 
-export async function closeWindows(filter?: { id: string; backend: string }): Promise<number> {
+export async function closeWindows(filter?: { id: string; backend: string }, waitForStop = true): Promise<number> {
   const entries = (await recentFolders()).filter((entry) => !filter ||
     (entry.id === filter.id && (entry.backend ?? 'code-server') === filter.backend));
   let hasWindows = false;
@@ -79,12 +80,17 @@ export async function closeWindows(filter?: { id: string; backend: string }): Pr
   await refreshWindowHistory();
   let closed = 0;
   const visited = new Set<string>();
+  const shutdownDirectories = new Set<string>();
   for (const entry of entries) {
     if (entry.backend === 'desktop') {
       const root = join(stateDirectory(), entry.id);
       if (!visited.has(root)) {
         visited.add(root);
-        if (await requestNativeAttachment(root, 'close')) closed++;
+        const closedDirectory = await requestNativeAttachment(root, 'close');
+        if (closedDirectory) {
+          closed++;
+          shutdownDirectories.add(closedDirectory);
+        }
       }
       continue;
     }
@@ -99,10 +105,13 @@ export async function closeWindows(filter?: { id: string; backend: string }): Pr
       const deadline = Date.now() + 1_000;
       while (Date.now() < deadline) {
         const response = await readPrivate<{ id: string }>(join(directory, 'response.json'));
-        if (response?.id === id) { closed++; break; }
+        if (response?.id === id) { closed++; shutdownDirectories.add(directory); break; }
         await delay(50);
       }
     }
+  }
+  if (waitForStop) {
+    for (const directory of shutdownDirectories) await waitForWindowShutdown(directory);
   }
   return closed;
 }

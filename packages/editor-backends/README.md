@@ -70,10 +70,29 @@ and external side effects are not rolled back. Replacement activation observes c
 container mutation and restoration are shielded from it so an interrupted upgrade cannot abandon the
 renamed previous container. Failed recovery clears unusable session/configuration receipts.
 
-The code-server image and configuration scripts now live under `images/code-server`.
-Its existing image tag, volume names and runtime behaviour are unchanged.
+The code-server image and configuration scripts live under `images/code-server`.
+The menu fixes ship as `vspod:4.106.3-node22-config-v3` and
+`vspod-desktop:1.106.3-node22-v3`; volume names and ownership are unchanged.
+Use `vspod upgrade --backend code-server` or `vspod upgrade --backend desktop` explicitly.
+Stop/open alone reuses an existing image rather than replacing its container.
+
+The web image includes a scoped titlebar overflow/stacking override so dropdowns can paint over
+editor panes. System WKWebView's default user agent lacks `Safari/`, so it misses VS Code's
+Safari-only overflow workaround. The override uses the existing menubar level, not an arbitrary
+maximum z-index, and does not change desktop VS Code styling. Its build-time patch validates the
+pinned editor's configuration and CSS anchors before writing either asset; upstream drift fails
+the image build. Desktop popups retain their full client-drawn shadows through the generic runner.
 
 ## Native presentation
+
+`npm run desktop:host` builds the generic Swift host and packages a local
+`dist/VSPod.app` with VSPod's application name, bundle identifier and existing Tauri icon.
+The adapter executes its `Contents/MacOS/VSPod` directly to preserve supervised stdin/stdout IPC.
+The generic runner remains unbranded; it reads app identity/icon from its containing bundle when
+packaged by a consumer. Guest document/repository window titles are preserved, and the application
+menu offers `Quit VSPod`. This local development bundle is not Developer ID signed or notarized.
+The Dock context menu lists the host's live editor windows using their current guest titles.
+Selecting an entry restores a minimized window and focuses it; popup menus and dialogs are excluded.
 
 `EditorBackend.nativePresenter` is an optional presentation capability, not a web URL. Core launches
 a separate CLI supervisor with a fresh private attachment directory and sends the typed native session
@@ -83,8 +102,9 @@ private focus/close request protocol used by history into generic host controls.
 
 There is one host attachment per desktop workspace, presenting all guest windows. Focus, subfolder
 reuse and new-window requests use the running editor's IPC (`XDG_RUNTIME_DIR=/tmp/runtime`), not a
-second compositor bridge. Native quit detaches; explicit stop first closes tracked attachments, then
-stops the selected container. Smoke detaches only its fresh attachment. A live existing attachment
+second compositor bridge. Normal last-window close and native quit stop the selected environment,
+retaining volumes. One-of-many window close keeps it running. Explicit stop first closes tracked
+attachments, then stops the selected container. Smoke detaches only its fresh attachment. A live existing attachment
 must be detached before smoke, so validation cannot accidentally steal its bridge.
 
 Core's native attachment service uses a private, heartbeat-backed exclusive lease, separate from the
@@ -102,10 +122,23 @@ History records the backend, so reopen/restore can select the right adapter. An 
 environment selection overrides history; repository YAML never does. Exported clipboard files and
 attachment directories are retained. Cleanup/rotation and signed helper packaging remain release work.
 
+Core records private, generation-bound window lifetimes independently of recent-folder history.
+A separate web-window supervisor watches Tauri's close acknowledgement after the opening CLI exits;
+the native supervisor handles clean host exit after its final guest window closes or native quit.
+Shutdown is serialized with open and upgrade, counts only the selected backend/generation and cannot
+stop a replacement container on a late close. Shutdown failures are recorded explicitly in private
+lifecycle state/logs. Crashes without a clean close retain the guest for recovery; the generic runner's
+detach-by-default contract is unchanged. Reopening after normal close reruns approved startup tasks.
+
 The desktop image is built from `images/desktop/Dockerfile` with the checkout as context and a
 file-specific allowlist, plus the generic runner image. VS Code is installed during image build.
 The version-specific folder-configuration patch fails the build if its anchor changes, rather than
-silently allowing `.vscode` to become authoritative. Configuration arrives over stdin before editor
+silently allowing `.vscode` to become authoritative. The patch validates the original workbench
+checksum and updates only that checksum in
+the product manifest for the intentional transformation; installation-integrity checks remain enabled.
+Older desktop images can report a corrupt installation because they retained the original checksum.
+An explicit desktop upgrade installs the corrected image; do not suppress the warning globally.
+Configuration arrives over stdin before editor
 launch; no passwords or tokens are injected. Restricted launches use temporary user/extension trees,
 skip profile keybindings and hooks, and never activate persistent extensions.
 
@@ -124,11 +157,12 @@ npm test
 npm run typecheck
 npm run test:docker
 npm run desktop:build
+npm run desktop:host
 npm run desktop:test
 npm run desktop:lint
 npm run test:native
 VSPOD_DESKTOP_TEST=1 \
-  npx tsx --test tests/desktop-backend.test.ts tests/desktop-recovery.test.ts tests/extensions-container.test.ts
+  npx tsx --test --test-concurrency=1 tests/desktop-backend.test.ts tests/desktop-recovery.test.ts tests/desktop-menus.test.ts tests/extensions-container.test.ts
 ```
 
 Docker tests verify real authentication, credential rotation, managed settings, isolated extension
@@ -144,3 +178,8 @@ exclusion, retained volume contents, changed-generation rejection, successful re
 readiness-failure and cancellation rollback, matching restored receipts and actionable doctor output.
 It simulates unavailable Docker through a scoped missing socket; it does not restart Docker Desktop
 or claim actual daemon-restart acceptance.
+Menu acceptance verifies actual system WKWebView dropdown hit-testing over split editor panes,
+including the non-Safari user agent. Native desktop menu acceptance checks light/dark themes,
+transparent corners, retained bottom-shadow pixels, no duplicate AppKit shadow and aligned input.
+The web overlap symptom was intermittent and not deterministically reproduced on the old image;
+the acceptance verifies the resulting rendering contract rather than claiming a reliable baseline failure.

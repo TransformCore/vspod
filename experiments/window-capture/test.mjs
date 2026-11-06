@@ -114,6 +114,7 @@ export async function acceptance({ name, root, execute, wait, output, send, wayl
     // Hover must follow the pointer over the menu every time. Borderless popup panels used to swallow most real
     // moves; the host now routes them to the owning window, which maps them into guest coordinates.
     const baseline = await snapshot(popup, 'hover-none');
+    const [offsetX, offsetY] = baseline.meta.window?.geometry ?? [0, 0];
     const { width: pw, height: ph } = baseline.meta;
     const scale = pw / Number(output().match(new RegExp(`WINDOW_META id=${popup} size=(\\d+)x`))[1]);
     const centroid = (pixels) => {
@@ -129,9 +130,10 @@ export async function acceptance({ name, root, execute, wait, output, send, wayl
     const results = [];
     for (const target of [72, 200, 72, 200, 72]) {
       // Posted through the app event queue onto the popup panel, the path a real mouse takes.
-      send({ action: 'testPostMove', id: popup, x: 60, y: target });
+      send({ action: 'testPostMove', id: popup, x: 60 + offsetX, y: target + offsetY });
       await delay(400);
-      results.push([target, centroid((await snapshot(popup, `hover-${results.length}`)).pixels)]);
+      const position = centroid((await snapshot(popup, `hover-${results.length}`)).pixels);
+      results.push([target, position === null ? null : position - offsetY]);
     }
     // Includes the first move into the popup, which used to be lost (pointer enter without motion).
     for (const [target, y] of results) {
@@ -154,7 +156,9 @@ export async function acceptance({ name, root, execute, wait, output, send, wayl
     await delay(500);
   }
   // The actual File menu's third row is New Window.
-  await click(popup, 100, 72);
+  const selectedMenu = await snapshot(popup, 'selected-menu');
+  const [offsetX, offsetY] = selectedMenu.meta.window?.geometry ?? [0, 0];
+  await click(popup, 100 + offsetX, 72 + offsetY);
   await wait(() => ids().length === 2, 'VS Code New Window');
   const second = ids()[1];
   await wait(() => output().includes(`WINDOW_FRAME id=${second} `), 'second independent texture');

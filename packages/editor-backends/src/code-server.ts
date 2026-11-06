@@ -10,7 +10,7 @@ import type { Workspace } from '@vspod/workspace';
 import type { CachedExtensionArtifact, ExtensionRuntimeAdapter } from '@vspod/extensions';
 
 export const CODE_SERVER_ENVIRONMENT: DockerEnvironment = {
-  image: 'vspod:4.106.3-node22-config-v2',
+  image: 'vspod:4.106.3-node22-config-v3',
   buildDirectory: 'packages/editor-backends/images/code-server',
   volumes: ['extensions', 'settings', 'state', 'config'],
   ports: [8080],

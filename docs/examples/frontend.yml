@@ -1,0 +1,24 @@
+# React/TypeScript or a plain JavaScript frontend. Copy to .vspod/vspod.yml.
+schemaVersion: 1
+name: frontend-project
+
+extensions:
+  required:
+    - dbaeumer.vscode-eslint
+    - esbenp.prettier-vscode
+  optional:
+    - redhat.vscode-yaml
+
+# JSX/TSX, JavaScript/TypeScript, HTML and CSS support is built into VS Code.
+# Use repository ESLint/Prettier configuration. Format explicitly until a default
+# formatter is selected in the editor; VSPod v1 does not accept formatter-specific
+# settings or per-language setting blocks.
+settings:
+  editor.tabSize: 2
+  editor.insertSpaces: true
+  editor.detectIndentation: true
+  editor.formatOnSave: false
+  files.insertFinalNewline: true
+
+# Install dependencies and launch the dev server explicitly. This definition does
+# not configure port forwarding or automatically expose a container dev server.

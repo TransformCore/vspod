@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { closeSync, openSync } from 'node:fs';
 import { access, lstat } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DockerAppRunner, type AppLaunchSpec, type HostIntegrations } from '@vspod/app-runner';
 import { DockerRuntime, environmentContainerName, type DockerEnvironment } from '@vspod/docker';
@@ -16,7 +16,7 @@ import type { Workspace } from '@vspod/workspace';
 import type { ExtensionRuntimeAdapter } from '@vspod/extensions';
 
 export const DESKTOP_ENVIRONMENT: DockerEnvironment = {
-  image: 'vspod-desktop:1.106.3-node22-v1',
+  image: 'vspod-desktop:1.106.3-node22-v3',
   buildDirectory: 'packages/editor-backends/images/desktop',
   containerSuffix: '-desktop',
   volumes: ['extensions', 'settings', 'state', 'config'],
@@ -24,6 +24,7 @@ export const DESKTOP_ENVIRONMENT: DockerEnvironment = {
 };
 export const DESKTOP_INTEGRATIONS: HostIntegrations = { clipboard: true, files: true, externalUrls: true };
 export const desktopContainerName = (workspace: Workspace) => environmentContainerName(workspace, DESKTOP_ENVIRONMENT);
+export const nativeHostBinary = () => join(installationRoot(), 'packages/editor-backends/dist/VSPod.app/Contents/MacOS/VSPod');
 
 export async function desktopSeccompPolicy(environment = process.env, root = installationRoot()): Promise<string> {
   const policy = environment.VSPOD_DESKTOP_SECCOMP ??
@@ -92,8 +93,12 @@ export class DesktopBackend implements EditorBackend {
   readonly nativePresenter = {
     check: async () => {
       if (process.platform !== 'darwin') throw new Error('The desktop backend currently requires macOS.');
-      try { await access(join(installationRoot(), 'packages/app-runner/dist/app-host')); }
-      catch { throw new Error('Build the native helper first: npm run build:host --workspace @vspod/app-runner'); }
+      try {
+        await access(nativeHostBinary());
+        const contents = dirname(dirname(nativeHostBinary()));
+        await access(join(contents, 'Info.plist'));
+        await access(join(contents, 'Resources/icon.icns'));
+      } catch { throw new Error('Build the native VSPod app first: npm run desktop:host'); }
       await desktopSeccompPolicy();
     },
     launch: (directory: string) => {

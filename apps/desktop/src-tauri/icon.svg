@@ -1,5 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <rect x="8" y="8" width="240" height="240" rx="48" fill="#172924"/>
-  <path d="M56 68h36l36 88 36-88h36l-56 128h-32z" fill="#8eebbe"/>
-  <path d="M50 214h156" stroke="#ffffff" stroke-width="8"/>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#203c33"/>
+      <stop offset="1" stop-color="#10251f"/>
+    </linearGradient>
+    <linearGradient id="front" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#91edbd"/>
+      <stop offset="1" stop-color="#50bd91"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="url(#background)"/>
+  <ellipse cx="128" cy="209" rx="74" ry="12" fill="#091a15" opacity=".55"/>
+  <!-- Code peeks out of the open box. -->
+  <path d="M106 49l-15 12 15 12m44-24 15 12-15 12m-15-28-14 32"
+        fill="none" stroke="#baffd9" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M57 106l71-25 71 25-71 29z" fill="#0d3026"/>
+  <path d="M57 106v76l71 30v-77z" fill="url(#front)"/>
+  <path d="M128 135v77l71-30v-76z" fill="#359b79"/>
+  <!-- Folded-out lid flaps keep the silhouette recognizably box-shaped. -->
+  <path d="M57 106l71 29-25 24-65-31z" fill="#b4f8cf"/>
+  <path d="M128 135l71-29 19 22-65 31z" fill="#77dbaa"/>
+  <path d="M57 106l71-25-18-16-68 24z" fill="#68cfa2"/>
+  <path d="M128 81l71 25 15-17-68-24z" fill="#96ebbf"/>
+  <!-- The front-face mark uses paths rather than font-dependent text. -->
+  <path d="M82 163l-9 6 9 11m23-8 9 11-9 6m-8-26-7 25"
+        fill="none" stroke="#15392d" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M171 159v25" stroke="#78dbad" stroke-width="5" stroke-linecap="round"/>
 </svg>

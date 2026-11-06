@@ -30,6 +30,9 @@ node packages/app-runner/tests/runtime.mjs --seccomp /absolute/path/to/renderer-
 
 The seccomp policy must permit the application's renderer sandbox. Never use unconfined seccomp.
 The native binary is built into `dist/app-host`; compilation is a build step, not an attachment step.
+Consumers can package that binary in their own macOS app bundle. The host uses its bundle's
+`CFBundleName` for the application menu and `CFBundleIconFile` for its Dock icon; unbundled launches
+retain the generic `Isolated App` menu. VSPod branding belongs to the editor adapter, not this runner.
 The VS Code fixture/playground in [experiments](../../experiments/wayland-capture/README.md) consumes this package
 and retains the pixel, menu, terminal and host-integration regression suites. X11 is supported only by
 the historical experiment adapter, not by the generic application image.
@@ -90,6 +93,13 @@ The first Wayland message is `{"type":"ready","version":1,"wayland":true,"bytes"
 fail explicitly before presentation. Window metadata, damage frames, cursors, destruction and host
 integrations retain the tested spike wire format. An attachment replays every live window and a full
 frame before subsequent damage. Never drop partial-damage messages when coalescing draws.
+
+Window `x`, `y`, `width` and `height` describe the captured surface in logical coordinates.
+The additive `geometry: [x, y, width, height]` field identifies the window body within that capture.
+Toplevels remain cropped to xdg window geometry; popups retain the complete surface, including
+client-drawn shadows outside the body. Popup placement and pointer translation use the capture
+origin, while hit-testing uses the body. ARGB popup alpha is preserved through Metal presentation
+and snapshot PNGs; transparent popup panels disable AppKit's extra shadow to avoid doubling it.
 
 ## Integration boundary and remaining work
 

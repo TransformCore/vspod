@@ -1,7 +1,7 @@
 //! Headless Wayland compositor for the isolated application runner.
 //!
 //! Every mapped xdg toplevel and xdg popup becomes one native host window. Pixels come straight from the
-//! client's wl_shm buffers, cropped to the xdg window geometry, and are streamed with the same
+//! client's wl_shm buffers, retaining popup shadow margins outside xdg window geometry, and streamed with the same
 //! length-prefixed JSON protocol as the X11 agent (plus a `scale` field). The host attaches through
 //! `vspod-compositor --bridge`, so it can disconnect and reattach while the editor keeps running.
 
@@ -123,10 +123,12 @@ struct Win {
     pos: (i32, i32),
     /// xdg window geometry within the surface, in logical coordinates.
     geo: Rectangle<i32, Logical>,
+    /// Captured surface bounds; popups retain the pixels outside window geometry for client shadows.
+    capture: Rectangle<i32, Logical>,
     scale: i32,
     width: usize,
     height: usize,
-    /// CPU shadow of the window-geometry pixels; serves snapshots, probes and host reattachment.
+    /// CPU copy of the captured pixels; serves snapshots, probes and host reattachment.
     pixels: Vec<u8>,
     /// Popup buffer carries premultiplied alpha (ARGB8888), e.g. Chromium's rounded menu corners.
     alpha: bool,
@@ -135,6 +137,11 @@ struct Win {
 }
 
 impl Win {
+    fn capture_origin(&self) -> (i32, i32) {
+        (self.pos.0 + self.capture.loc.x - self.geo.loc.x,
+         self.pos.1 + self.capture.loc.y - self.geo.loc.y)
+    }
+
     fn surface(&self) -> &WlSurface {
         match &self.role {
             Role::Toplevel(toplevel) => toplevel.wl_surface(),
@@ -305,6 +312,7 @@ impl State {
             mapped: false,
             pos: (0, 0),
             geo: Rectangle::default(),
+            capture: Rectangle::default(),
             scale: 1,
             width: 0,
             height: 0,
@@ -371,9 +379,11 @@ impl State {
             }
             Role::Popup(_) => (String::new(), self.root(id), true),
         };
+        let origin = win.capture_origin();
         Some(json!({
             "type": "window", "id": id, "title": title.chars().take(1024).collect::<String>(),
-            "x": win.pos.0, "y": win.pos.1, "width": win.geo.size.w, "height": win.geo.size.h,
+            "x": origin.0, "y": origin.1, "width": win.capture.size.w, "height": win.capture.size.h,
+            "geometry": [win.geo.loc.x - win.capture.loc.x, win.geo.loc.y - win.capture.loc.y, win.geo.size.w, win.geo.size.h],
             "popup": popup, "owner": owner, "dialog": owner != 0 && !popup, "scale": win.scale, "alpha": win.alpha,
         }))
     }
@@ -429,15 +439,20 @@ impl State {
             if geo.size.w <= 0 || geo.size.h <= 0 || geo.size.w > MAX_LOGICAL.0 || geo.size.h > MAX_LOGICAL.1 {
                 return Err("window exceeds capture dimensions".into());
             }
-            let (gx, gy) = ((geo.loc.x * scale) as i64, (geo.loc.y * scale) as i64);
-            let (w, h) = ((geo.size.w * scale) as usize, (geo.size.h * scale) as usize);
-            let full = !win.mapped || win.width != w || win.height != h || win.scale != scale;
+            let capture = if matches!(win.role, Role::Popup(_)) { surface_rect } else { geo };
+            if capture.size.w > MAX_LOGICAL.0 || capture.size.h > MAX_LOGICAL.1 {
+                return Err("surface exceeds capture dimensions".into());
+            }
+            let (gx, gy) = ((capture.loc.x * scale) as i64, (capture.loc.y * scale) as i64);
+            let (w, h) = ((capture.size.w * scale) as usize, (capture.size.h * scale) as usize);
+            let full = !win.mapped || win.capture != capture || win.scale != scale;
             if full {
                 win.pixels = vec![0; w * h * 4];
                 win.width = w;
                 win.height = h;
             }
             win.geo = geo;
+            win.capture = capture;
             win.scale = scale;
             win.alpha = data.format == wl_shm::Format::Argb8888 && matches!(win.role, Role::Popup(_));
             let mut rects: Vec<[usize; 4]> = if full {
@@ -656,7 +671,7 @@ impl State {
     #[allow(clippy::type_complexity)]
     fn target(&self, id: u64, x: i64, y: i64) -> (Point<f64, Logical>, Option<u64>, Option<(WlSurface, Point<f64, Logical>)>) {
         let root = self.root(id);
-        let origin = self.windows[&id].pos;
+        let origin = self.windows[&id].capture_origin();
         let location: Point<f64, Logical> = ((origin.0 as i64 + x) as f64, (origin.1 as i64 + y) as f64).into();
         // Coordinates are relative to the host window but may lie outside it (AppKit's key window also sees
         // moves over its popup panels). Hit-test this toplevel's popups topmost first, then the toplevel.

@@ -14,3 +14,4 @@ export type { MigrationResult } from './migration.ts';
 export { configurationTrusted, trustConfiguration, revokeConfigurationTrust } from './trust.ts';
 export { syncWorkspaceExtensions } from './extensions.ts';
 export type { SyncExtensionsOptions } from './extensions.ts';
+export { watchWindowLifecycle, stopAfterLastWindow, waitForWindowShutdown } from './window-lifecycle.ts';

@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process';
+import { closeSync, openSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { access, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
-import { desktopCommand, desktopInstallation } from './installation.ts';
+import { desktopCommand, desktopInstallation, installationRoot } from './installation.ts';
 import { readPrivate, withProjectLock, writePrivate } from './state.ts';
 import { closeWindows, focusFolder, recentFolders, rememberFolder } from './history.ts';
 import { VspodError, explainError } from './errors.ts';
@@ -16,6 +17,7 @@ import { operationSignal, withCancellation } from './process.ts';
 import { assertConfigurationActivatable, inspectConfiguration } from './configuration.ts';
 import { assertWorkspaceExtensions } from './extensions.ts';
 import { requestNativeAttachment } from './native-attachment.ts';
+import { registerWindowLifetime } from './window-lifecycle.ts';
 
 export interface StartupProgress {
   step: number;
@@ -197,8 +199,10 @@ export async function openWorkspace(backend: EditorBackend, directory: string, o
       if (startedHere) await writePrivate(appliedPath, {
         backend: backend.id, fingerprint: configuration.fingerprint, containerId: instance.id, startedAt: instance.startedAt,
       });
+      const runtimeSession = `${instance.id}/${instance.startedAt}`;
+      if (!options.smoke) await registerWindowLifetime(launchDirectory, workspace, backend.id, runtimeSession);
       await writePrivate(path, { ...initial, ...current, status: 'ready', message: current.title, presentation: session.presentation,
-        runtimeSession: `${instance.id}/${instance.startedAt}` });
+        runtimeSession, stopOnClose: !options.smoke });
       const deadline = Date.now() + 90_000;
       let authenticated = false;
       while (Date.now() < deadline) {
@@ -214,6 +218,26 @@ export async function openWorkspace(backend: EditorBackend, directory: string, o
           await writePrivate(path, { ...initial, ...current, status: 'connected', message: current.title });
         }
         if (ack?.stage === 'editor-ready') {
+          if (!native && !options.smoke) {
+            const log = openSync(join(launchDirectory, 'lifetime.log'), 'ax', 0o600);
+            let watcher: ReturnType<typeof spawn>;
+            try {
+              watcher = spawn(process.execPath, [join(installationRoot(), 'bin/vspod.mjs'), '__watch-window', launchDirectory],
+                { stdio: ['ignore', log, log], detached: true });
+            } finally { closeSync(log); }
+            let watcherFailure: Error | undefined;
+            watcher.on('error', (error) => { watcherFailure = error; });
+            watcher.unref();
+            const watchingDeadline = Date.now() + 10_000;
+            while (true) {
+              const lifetimeAck = await readPrivate<{ stage: string; title?: string }>(join(launchDirectory, 'lifetime-ack.json'));
+              if (lifetimeAck?.stage === 'error') throw new Error(lifetimeAck.title ?? 'The window lifecycle supervisor failed.');
+              if (lifetimeAck?.stage === 'watching' || lifetimeAck?.stage === 'closed') break;
+              if (watcherFailure) throw watcherFailure;
+              if (Date.now() > watchingDeadline) throw new Error('The window lifecycle supervisor did not start. Inspect its private lifetime.log.');
+              await delay(50, undefined, { signal });
+            }
+          }
           if (!options.smoke) await rememberFolder(workspace, folder, launchDirectory, `${instance.id}/${instance.startedAt}`, backend.id);
           await report(5, 'Ready', `${workspace.name} opened in ${((performance.now() - start) / 1000).toFixed(1)}s`, true);
           completed = true;
@@ -267,7 +291,7 @@ export async function stopWorkspace(target: ContainerRuntime | EditorBackend, di
     await runtime.ensureAvailable();
     if (backend?.nativePresenter) {
       await requestNativeAttachment(rootState, 'close');
-      await closeWindows({ id: workspace.id, backend: backend.id });
+      await closeWindows({ id: workspace.id, backend: backend.id }, false);
     }
     await runtime.stop(workspace);
     await rm(join(state, 'runtime.json'), { force: true });

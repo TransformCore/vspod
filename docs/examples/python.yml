@@ -1,0 +1,24 @@
+# Python package, API or command-line tool. Copy to .vspod/vspod.yml.
+schemaVersion: 1
+name: python-project
+
+extensions:
+  required:
+    - ms-python.python
+    - detachhead.basedpyright
+  optional:
+    - tamasfe.even-better-toml
+    - redhat.vscode-yaml
+    - ms-azuretools.vscode-docker
+
+# basedpyright supplies Python language analysis without requiring Pylance.
+# Provision Python and a virtual environment inside the container, then select its
+# interpreter in the editor. Extensions do not install the project's dependencies.
+settings:
+  editor.tabSize: 4
+  editor.insertSpaces: true
+  editor.detectIndentation: true
+  editor.formatOnSave: false
+  files.insertFinalNewline: true
+
+# No automatic pip/uv install or account requirements.

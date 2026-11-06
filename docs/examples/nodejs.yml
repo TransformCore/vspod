@@ -1,0 +1,23 @@
+# Node.js API, CLI or TypeScript service. Copy to .vspod/vspod.yml.
+schemaVersion: 1
+name: nodejs-project
+
+extensions:
+  required:
+    - dbaeumer.vscode-eslint
+  optional:
+    - esbenp.prettier-vscode
+    - redhat.vscode-yaml
+    - ms-azuretools.vscode-docker
+
+# JavaScript/TypeScript, JSON and Node.js debugging support is built into VS Code.
+# ESLint needs the project's ESLint dependency and configuration.
+settings:
+  editor.tabSize: 2
+  editor.insertSpaces: true
+  editor.detectIndentation: true
+  editor.formatOnSave: false
+  files.insertFinalNewline: true
+
+# Install dependencies explicitly using the project's package manager and lockfile.
+# No automatic npm install, account requirements or container credentials.

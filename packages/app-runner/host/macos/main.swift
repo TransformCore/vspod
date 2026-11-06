@@ -98,6 +98,8 @@ final class WindowView: InputView {
             metal.metalLayer.isOpaque = !alpha
             window?.isOpaque = !alpha
             window?.backgroundColor = alpha ? .clear : .windowBackgroundColor
+            // Transparent popup buffers already contain the client's shadow, including its rounded shape.
+            window?.hasShadow = !alpha
             requestDraw()
         }
     }
@@ -344,7 +346,6 @@ final class WindowView: InputView {
     func requestDraw(snapshot: String? = nil,
                      latency: (seq: Int, at: CFTimeInterval, received: CFTimeInterval, header: [String: Any], bytes: Int)? = nil) {
         let alpha = self.alpha
-        let reshadow = alpha && frames <= 2
         render.async { [self] in
             drawAlpha = alpha
             if let snapshot { drawSnapshot = snapshot }
@@ -355,8 +356,6 @@ final class WindowView: InputView {
                 drawScheduled = false
                 let size = metal.metalLayer.drawableSize
                 traced("draw id=\(id) \(Int(size.width))x\(Int(size.height))") { drawNow() }
-                // The panel shadow follows the drawn shape, so recompute it once the rounded corners are on screen.
-                if reshadow { DispatchQueue.main.async { self.window?.invalidateShadow() } }
             }
         }
     }
@@ -468,7 +467,7 @@ final class WindowView: InputView {
     }
 }
 
-final class Session: NSObject {
+final class Session: NSObject, NSApplicationDelegate {
     let configuration: HostConfiguration
     let selftest = ProcessInfo.processInfo.environment["VSPOD_WINDOW_SELFTEST"] == "1"
     let process = Process()
@@ -482,6 +481,27 @@ final class Session: NSObject {
     var stopping = false
     var mainCount = 0
     var cursor = NSCursor.arrow
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        for id in windows.keys.sorted() {
+            guard let window = windows[id], let view = views[id], !view.popup && !view.dialog else { continue }
+            let item = NSMenuItem(title: window.title.isEmpty ? "Untitled" : window.title,
+                                  action: #selector(focusDockWindow(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = id
+            item.state = window.isKeyWindow ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+    @objc func focusDockWindow(_ item: NSMenuItem) {
+        guard let window = windows[item.tag], let view = views[item.tag], !view.popup && !view.dialog else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(view)
+        log("WINDOW_DOCK_FOCUSED id=\(item.tag)")
+    }
     static let cursorScale = 2.0
     // X/CSS cursor names (as fingerprinted from the guest theme) with a direct AppKit equivalent.
     static let nativeCursors: [String: (name: String, cursor: NSCursor)] = {
@@ -648,7 +668,6 @@ final class Session: NSObject {
             let scale = header["scale"] as? Int ?? 1
             guard (1...2).contains(scale) else { fail("Invalid window scale") }
             metadata[id] = header
-            defer { views[id]?.alpha = popup && header["alpha"] as? Bool == true }
             if windows[id] == nil {
                 let view = WindowView(id: id, session: self)
                 view.popup = popup
@@ -662,6 +681,7 @@ final class Session: NSObject {
                     : NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: style, backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
                 window.contentView = view
+                window.isExcludedFromWindowsMenu = popup || dialog
                 window.delegate = view
                 window.acceptsMouseMovedEvents = true
                 window.contentMinSize = dialog || popup ? NSSize(width: 1, height: 1) : NSSize(width: 300, height: 200)
@@ -680,6 +700,7 @@ final class Session: NSObject {
                 view.sendBounds()
             }
             guard let window = windows[id], let view = views[id] else { fail("Missing native window") }
+            view.alpha = popup && header["alpha"] as? Bool == true
             window.title = title
             if !window.inLiveResize, !view.closingRequested,
                Int(view.bounds.width) != width || Int(view.bounds.height) != height {
@@ -701,12 +722,14 @@ final class Session: NSObject {
                 }
                 do {
                     try pixels.write(to: URL(fileURLWithPath: root + "/" + tag + ".bgra"))
-                    try JSONSerialization.data(withJSONObject: header).write(to: URL(fileURLWithPath: root + "/" + tag + ".json"))
+                    var snapshot = header
+                    snapshot["window"] = metadata[id]
+                    try JSONSerialization.data(withJSONObject: snapshot).write(to: URL(fileURLWithPath: root + "/" + tag + ".json"))
                     guard let width = header["width"] as? Int, let height = header["height"] as? Int,
                           let provider = CGDataProvider(data: pixels as CFData),
                           let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
                             bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
-                            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue).union(.byteOrder32Little),
+                            bitmapInfo: CGBitmapInfo(rawValue: (view.alpha ? CGImageAlphaInfo.premultipliedFirst : .noneSkipFirst).rawValue).union(.byteOrder32Little),
                             provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
                           let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
                         fail("Snapshot encoding failed")
@@ -816,9 +839,26 @@ final class Session: NSObject {
             let screen = NSScreen.main?.visibleFrame ?? .zero
             let frames = windows.mapValues { [$0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height] }
             let body: [String: Any] = ["screen": [screen.minX, screen.minY, screen.width, screen.height],
-                                       "windows": Dictionary(uniqueKeysWithValues: frames.map { (String($0.key), $0.value) })]
+                                       "windows": Dictionary(uniqueKeysWithValues: frames.map { (String($0.key), $0.value) }),
+                                       "geometry": Dictionary(uniqueKeysWithValues: metadata.compactMap { id, meta in
+                                           (meta["geometry"] as? [Int]).map { (String(id), $0) }
+                                       })]
             do { log("WINDOW_FRAMES \(String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self))") }
             catch { fail("Frame dump: \(error)") }
+            return
+        }
+        if action == "testDockMenu" {
+            guard selftest else { fail("Dock menu control is selftest-only") }
+            let menu = applicationDockMenu(NSApplication.shared)!
+            if let id = request["focus"] as? Int {
+                guard let item = menu.items.first(where: { $0.tag == id }) else { fail("Unknown Dock menu window") }
+                windows[id]?.miniaturize(nil)
+                focusDockWindow(item)
+            }
+            let entries = menu.items.map { ["id": $0.tag, "title": $0.title,
+                                           "minimized": windows[$0.tag]?.isMiniaturized ?? false] as [String: Any] }
+            do { log("WINDOW_DOCK_MENU \(String(decoding: try JSONSerialization.data(withJSONObject: entries), as: UTF8.self))") }
+            catch { fail("Dock menu dump: \(error)") }
             return
         }
         guard let id = request["id"] as? Int, let view = views[id], let window = windows[id] else {
@@ -880,6 +920,11 @@ final class Session: NSObject {
                   tag.range(of: "^[a-zA-Z0-9-]{1,60}$", options: .regularExpression) != nil else {
                 fail("Invalid native snapshot request")
             }
+            do {
+                let state: [String: Any] = ["metadata": metadata[id] ?? [:], "opaque": window.isOpaque,
+                                            "shadow": window.hasShadow, "layerOpaque": view.metal.metalLayer.isOpaque]
+                try JSONSerialization.data(withJSONObject: state).write(to: URL(fileURLWithPath: root + "/" + tag + ".native.json"))
+            } catch { fail("Native snapshot state: \(error)") }
             view.requestDraw(snapshot: tag)
         } else { send(request) }
     }
@@ -898,15 +943,25 @@ final class Session: NSObject {
 }
 
 let app = NSApplication.shared
+let applicationName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Isolated App"
+if let iconFile = Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String {
+    guard let resources = Bundle.main.resourceURL,
+          let icon = NSImage(contentsOf: resources.appendingPathComponent(iconFile)) else {
+        fail("Cannot load the bundled application icon")
+    }
+    app.applicationIconImage = icon
+}
+log("WINDOW_APP name=\(applicationName) bundled=\(Bundle.main.bundleURL.pathExtension == "app") icon=\(app.applicationIconImage != nil) identifier=\(Bundle.main.bundleIdentifier ?? "none")")
 app.setActivationPolicy(.regular)
 guard CommandLine.arguments.count == 2 else {
     fail("Usage: app-host private-host-configuration.json")
 }
 let session = Session(configuration: HostConfiguration.read(CommandLine.arguments[1]))
+app.delegate = session
 let menu = NSMenu()
 let item = NSMenuItem()
 let submenu = NSMenu()
-submenu.addItem(withTitle: "Quit Isolated App", action: #selector(Session.quit(_:)), keyEquivalent: "q").target = session
+submenu.addItem(withTitle: "Quit \(applicationName)", action: #selector(Session.quit(_:)), keyEquivalent: "q").target = session
 item.submenu = submenu
 menu.addItem(item)
 app.mainMenu = menu

@@ -12,11 +12,12 @@
     "test": "tsx --test packages/*/src/*.test.ts tests/*.test.ts",
     "test:docker": "VSPOD_DOCKER_TEST=1 tsx --test tests/container.test.ts tests/extensions-container.test.ts",
     "test:registry": "VSPOD_EXTENSION_REGISTRY_TEST=1 tsx --test tests/extensions-container.test.ts",
-    "test:native": "VSPOD_NATIVE_TEST=1 tsx --test tests/native.test.ts",
+    "test:native": "VSPOD_NATIVE_TEST=1 tsx --test --test-concurrency=1 tests/native.test.ts tests/web-menus.test.ts",
     "typecheck": "tsc --noEmit",
     "identity:build": "bash apps/keychain-helper/build.sh",
     "desktop:check": "npm run check --workspace @vspod/desktop",
     "desktop:build": "npm run build --workspace @vspod/desktop",
+    "desktop:host": "npm run build:host --workspace @vspod/editor-backends",
     "desktop:package": "npm run package --workspace @vspod/desktop",
     "desktop:test": "npm run test --workspace @vspod/desktop",
     "desktop:lint": "cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml -- -D warnings"

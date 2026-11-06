@@ -66,6 +66,30 @@ independently validated batches, without making the generic runner depend on VSP
    native binaries, signed policy distribution, clipboard-file cleanup, multi-monitor/scaling polish.
    Acceptance: dual-backend end-to-end coverage, explicit unsupported-platform errors and
    documented limitations before promoting desktop beyond opt-in experimental status.
+5. **Menu rendering polish - implemented.** The runner retains full popup buffers and client shadows,
+   with body geometry separate from capture bounds so placement and input remain aligned.
+   Transparent panels do not add a second AppKit shadow. The maintained web image explicitly
+   enables titlebar overflow and menu stacking for WKWebView, whose user agent omits Safari.
+   Acceptance: native light/dark corner alpha, retained bottom-shadow pixels and real popup input;
+   system WKWebView dropdown hit-testing over actual split editor panes. The intermittent old-image
+   web occlusion was not reliably reproduced; its missing Safari-only workaround was confirmed.
+   Existing environments require explicit backend upgrades; persistent volumes are retained.
+   The desktop build validates the upstream workbench checksum before patching and records only
+   the intentional transformation in the integrity manifest. Runtime checks remain enabled;
+   acceptance verifies all protected files and absence of corruption diagnostics in editor logs.
+6. **Last-window shutdown - implemented.** Normal final-window close and CLI/native quit stop the
+   repository/backend container, retaining all volumes and restore history. Closing one of several
+   windows keeps the shared environment running. Web windows have an independent lifetime supervisor;
+   native shutdown follows clean final-window/host exit. Generation checks and repository locking
+   serialize shutdown with opens/upgrades so stale close events cannot stop replacement guests.
+   Presenter crashes retain recoverable guests; smoke remains a validation-only detach exception.
+   Acceptance: one-of-many close, final close, quit/restore, generation/backend isolation, retained
+   data and explicit shutdown diagnostics.
+7. **Native app identity - implemented locally.** The editor adapter packages the generic host in
+   `VSPod.app` with VSPod's shared icon, bundle name and `Quit VSPod` menu. Guest document/project
+   window titles and supervised stdin/stdout remain intact. Setup builds the bundle; missing bundle
+   assets fail explicitly. Acceptance: branded bundle identity and byte-identical icon in real desktop
+   lifecycle/menu tests; unbundled GTK runner remains generic. Signing/notarization remain release gates.
 
 **Dependencies:** configuration/trust and extension lifecycle above; identity broker transport before
 claiming container account support. The runner receives resolved launches, not repository YAML or credentials.

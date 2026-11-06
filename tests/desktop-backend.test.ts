@@ -84,6 +84,17 @@ exports.activate = async () => {
     const terminal = vscode.window.createTerminal({ name: 'Desktop probe', shellPath: '/bin/sh',
       shellArgs: ['-c', "printf desktop-terminal > /workspace/terminal.txt"] });
     terminal.show();
+    fs.writeFileSync('/workspace/probe-ready.json', JSON.stringify({ folder: vscode.workspace.workspaceFolders[0].uri.fsPath }));
+    let closing = false;
+    setInterval(() => {
+      const folder = vscode.workspace.workspaceFolders[0]?.uri.fsPath;
+      const request = '/workspace/close-probe-window';
+      if (!closing && fs.existsSync(request) && fs.readFileSync(request, 'utf8') === folder) {
+        closing = true;
+        fs.unlinkSync(request);
+        vscode.commands.executeCommand('workbench.action.closeWindow');
+      }
+    }, 100);
   } catch (error) { fs.writeFileSync('/workspace/probe-error.txt', String(error)); }
 };`;
     const manifest = { name: 'desktop-probe', publisher: 'vspod', version: '0.0.1',
@@ -99,6 +110,31 @@ exports.activate = async () => {
     assert.equal(await optionalText(join(repo, 'probe-error.txt')), undefined);
     assert.equal(await waitFor(() => optionalText(join(repo, 'saved.txt')), Boolean, 'editor save'), 'saved through desktop VS Code');
     assert.equal(await waitFor(() => optionalText(join(repo, 'terminal.txt')), Boolean, 'integrated terminal'), 'desktop-terminal');
+    await execute('docker', ['exec', name, 'node', '-e', `
+const fs = require('fs'), crypto = require('crypto'), assert = require('assert/strict');
+const root = '/opt/vscode/resources/app';
+const product = JSON.parse(fs.readFileSync(root + '/product.json'));
+assert.ok(Object.keys(product.checksums).length > 0, 'Installation integrity checking must remain enabled');
+for (const [file, expected] of Object.entries(product.checksums)) {
+  const actual = crypto.createHash('sha256').update(fs.readFileSync(root + '/out/' + file))
+    .digest('base64').replace(/=+$/, '');
+  assert.equal(actual, expected, 'Installation integrity mismatch: ' + file);
+}
+let logCount = 0;
+function checkLogs(directory) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const path = directory + '/' + entry.name;
+    if (entry.isDirectory()) checkLogs(path);
+    else if (entry.isFile() && entry.name.endsWith('.log')) {
+      logCount++;
+      assert.ok(!fs.readFileSync(path, 'utf8').includes('Installation has been modified on disk'),
+        'VS Code reported a corrupt installation in ' + path);
+    }
+  }
+}
+checkLogs('/vspod/state/user-data/logs');
+assert.ok(logCount > 0, 'Must inspect actual editor runtime logs');
+`]);
     assert.equal(await optionalText(join(repo, 'startups.txt')), 'x');
     assert.deepEqual(JSON.parse(await execute('docker', ['exec', name, 'cat', '/vspod/settings/keybindings.json'])),
       [{ key: 'ctrl+alt+p', command: 'workbench.action.showCommands' }]);
@@ -123,12 +159,21 @@ exports.activate = async () => {
     const records = await recentFolders();
     assert.equal(records[0].backend, 'desktop');
     const launch = join(state, records[0].windows[0]);
+    assert.match((await optionalText(join(launch, 'host.log'))) ?? '',
+      /WINDOW_APP name=VSPod bundled=true icon=true identifier=dev\.vspod\.native-host/,
+      'native presenter must launch the branded app bundle, not the generic executable');
+    const bundledIcon = join(installationRoot(), 'packages/editor-backends/dist/VSPod.app/Contents/Resources/icon.icns');
+    assert.deepEqual(await readFile(bundledIcon), await readFile(join(installationRoot(), 'apps/desktop/src-tauri/icons/icon.icns')),
+      'desktop backend uses the same VSPod icon as Tauri');
     assert.equal((await readPrivate<{ stage: string }>(join(launch, 'ack.json')))?.stage, 'editor-ready');
-    assert.equal(await closeWindows(), 1, 'quit detaches only the host');
+    assert.equal(await closeWindows(), 1, 'quit waits for native host and container shutdown');
     assert.equal((await runtime.inspect(workspace))?.startedAt, first?.startedAt);
-    assert.equal((await runtime.inspect(workspace))?.running, true);
-    assert.ok(await openWorkspace(backend, repo), 'reattach presents the still-running editor');
-    assert.equal((await runtime.inspect(workspace))?.startedAt, first?.startedAt);
+    assert.equal((await runtime.inspect(workspace))?.running, false);
+    assert.equal(await readPrivate(join(state, 'desktop/runtime.json')), undefined);
+    await rm(join(repo, 'probe-ready.json'), { force: true });
+    assert.ok(await openWorkspace(backend, repo), 'reopen restarts the retained editor container');
+    assert.notEqual((await runtime.inspect(workspace))?.startedAt, first?.startedAt);
+    await waitFor(() => optionalText(join(repo, 'probe-ready.json')), Boolean, 'fixture editor save completes before folder switch');
     assert.equal(await openWorkspace(backend, join(repo, 'subfolder')), undefined, 'subfolder uses the same native host');
     await waitFor(() => optionalText(join(repo, 'probe.json')),
       (value) => !!value && JSON.parse(value).folder === '/workspace/subfolder', 'subfolder IPC');
@@ -138,12 +183,19 @@ exports.activate = async () => {
     await waitFor(() => optionalText(join(activeLaunch, 'host.log')),
       (value) => (value?.match(/WINDOW_CREATED id=\d+ popup=false/g)?.length ?? 0) >= 2, 'second native guest window');
 
-    await stopWorkspace(backend, repo);
+    await writeFile(join(repo, 'close-probe-window'), '/workspace/subfolder');
+    await waitFor(() => optionalText(join(activeLaunch, 'host.log')),
+      (value) => /WINDOW_DESTROYED id=\d+/.test(value ?? ''), 'one native window closes');
+    assert.equal((await runtime.inspect(workspace))?.running, true, 'closing one of two native windows keeps the container running');
+    await writeFile(join(repo, 'close-probe-window'), '/workspace');
+    await waitFor(() => runtime.inspect(workspace), (instance) => instance?.running === false, 'last native window stops the container');
+    await waitFor(() => readPrivate<{ stage: string }>(join(activeLaunch, 'lifetime-ack.json')),
+      (value) => value?.stage === 'closed', 'native shutdown acknowledgement');
     assert.equal((await runtime.inspect(workspace))?.running, false);
     assert.equal(await readPrivate(join(state, 'desktop/runtime.json')), undefined);
     assert.ok(await openWorkspace(backend, repo, { smoke: true }));
     assert.equal(await execute('docker', ['exec', name, 'cat', '/vspod/state/persistence']), 'retained');
-    assert.equal(await optionalText(join(repo, 'startups.txt')), 'xx');
+    assert.equal(await optionalText(join(repo, 'startups.txt')), 'xxx');
     assert.equal((await runtime.inspect(workspace))?.running, true, 'smoke detaches without stopping the guest');
     await stopWorkspace(backend, repo);
     await rm(join(repo, 'probe.json'), { force: true });
